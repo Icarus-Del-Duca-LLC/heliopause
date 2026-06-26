@@ -35,6 +35,8 @@ jobs:
   python-tests:
     name: Python Unit Tests
     runs-on: ubuntu-latest
+    env:
+      AWS_DEFAULT_REGION: us-east-1
     defaults:
       run:
         working-directory: ./lambda

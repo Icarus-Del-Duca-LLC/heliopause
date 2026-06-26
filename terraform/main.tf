@@ -1,6 +1,13 @@
 terraform {
   required_version = ">= 1.5"
 
+  backend "s3" {
+    bucket  = "heliopause-state-idd-llc-dev"
+    key     = "heliopause/statefiles/heliopause.tfstate"
+    region  = "us-east-1"
+    profile = "idd_llc"
+  }
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -27,24 +34,35 @@ resource "random_id" "bucket_suffix" {
 
 resource "aws_s3_bucket" "state_bucket" {
   bucket = var.state_bucket_name != "" ? var.state_bucket_name : "heliopause-state-${random_id.bucket_suffix.hex}"
+}
 
-  versioning {
-    enabled = true
+resource "aws_s3_bucket_versioning" "state_bucket_versioning" {
+  bucket = aws_s3_bucket.state_bucket.id
+  versioning_configuration {
+    status = "Enabled"
   }
+}
 
-  server_side_encryption_configuration {
-    rule {
-      apply_server_side_encryption_by_default {
-        sse_algorithm = "AES256"
-      }
+resource "aws_s3_bucket_server_side_encryption_configuration" "state_bucket_encryption" {
+  bucket = aws_s3_bucket.state_bucket.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
     }
   }
+}
 
-  lifecycle_rule {
-    id      = "expire-old-state-files"
-    enabled = true
+resource "aws_s3_bucket_lifecycle_configuration" "state_bucket_lifecycle" {
+  bucket = aws_s3_bucket.state_bucket.id
 
-    prefix = var.state_prefix
+  rule {
+    id     = "expire-old-state-files"
+    status = "Enabled"
+
+    filter {
+      prefix = var.state_prefix
+    }
 
     expiration {
       days = 365
@@ -73,7 +91,7 @@ data "aws_iam_policy_document" "lambda_assume_role" {
 }
 
 resource "aws_iam_role" "lambda_execution" {
-  name               = "heliopause-lambda-role"
+  name               = var.lambda_role_name
   assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
 }
 
@@ -110,8 +128,18 @@ data "aws_iam_policy_document" "lambda_policy" {
       "rds:Describe*",
       "elasticloadbalancing:Describe*",
       "ecs:Describe*",
+      "ecs:List*",
+      "autoscaling:Describe*",
       "cloudwatch:Describe*",
-      "ssm:GetParameter"
+      "ssm:GetParameter",
+      "elasticache:Describe*",
+      "aps:ListWorkspaces",
+      "aps:DescribeWorkspace",
+      "s3:ListAllMyBuckets",
+      "s3:ListBucketVersions",
+      "s3:ListBucketMultipartUploads",
+      "iam:List*",
+      "iam:Get*"
     ]
     resources = ["*"]
   }
@@ -126,8 +154,41 @@ data "aws_iam_policy_document" "lambda_policy" {
       "ec2:DeleteRoute",
       "ec2:DeleteRouteTable",
       "ec2:DeleteVpc",
+      "ec2:DeleteSecurityGroup",
+      "ec2:DeleteVpcEndpoints",
+      "ec2:DeleteVpcPeeringConnection",
+      "ec2:DeleteNetworkInterface",
+      "ec2:DetachNetworkInterface",
+      "ec2:DetachInternetGateway",
+      "ec2:DeleteInternetGateway",
+      "ec2:DisassociateRouteTable",
+      "ec2:RevokeSecurityGroupIngress",
+      "ec2:RevokeSecurityGroupEgress",
       "rds:DeleteDBInstance",
-      "elasticloadbalancing:DeleteLoadBalancer"
+      "elasticloadbalancing:DeleteLoadBalancer",
+      "autoscaling:DeleteAutoScalingGroup",
+      "ecs:DeleteCluster",
+      "elasticache:DeleteCacheCluster",
+      "elasticache:DeleteReplicationGroup",
+      "aps:DeleteWorkspace",
+      "s3:DeleteBucket",
+      "s3:DeleteObject",
+      "s3:DeleteObjectVersion",
+      "s3:AbortMultipartUpload",
+      "iam:DeleteRole",
+      "iam:DeleteUser",
+      "iam:DeleteRolePolicy",
+      "iam:DeleteUserPolicy",
+      "iam:DetachRolePolicy",
+      "iam:DetachUserPolicy",
+      "iam:DeleteLoginProfile",
+      "iam:DeleteAccessKey",
+      "iam:DeleteSigningCertificate",
+      "iam:DeleteSSHPublicKey",
+      "iam:DeleteServiceSpecificCredentials",
+      "iam:DeactivateMFADevice",
+      "iam:DeleteVirtualMFADevice",
+      "iam:RemoveRoleFromInstanceProfile"
     ]
     resources = ["*"]
   }
@@ -151,6 +212,13 @@ resource "aws_sns_topic" "notifications" {
   name = "heliopause-notifications"
 }
 
+resource "aws_sns_topic_subscription" "email_subscription" {
+  count     = var.notification_email != null ? 1 : 0
+  topic_arn = aws_sns_topic.notifications.arn
+  protocol  = "email"
+  endpoint  = var.notification_email
+}
+
 data "archive_file" "lambda_package" {
   type        = "zip"
   source_file = "${path.module}/../lambda/handler.py"
@@ -169,11 +237,26 @@ resource "aws_lambda_function" "heliopause" {
 
   environment {
     variables = {
-      STATE_BUCKET_NAME = aws_s3_bucket.state_bucket.id
-      STATE_PREFIX      = var.state_prefix
-      CORE_STATE_FILE   = var.core_state_file
-      DRY_RUN           = tostring(var.dry_run)
-      SNS_TOPIC_ARN     = aws_sns_topic.notifications.arn
+      STATE_BUCKET_NAME           = aws_s3_bucket.state_bucket.id
+      STATE_PREFIX                = var.state_prefix
+      CORE_STATE_FILE             = var.core_state_file
+      DRY_RUN                     = tostring(var.dry_run)
+      SNS_TOPIC_ARN               = aws_sns_topic.notifications.arn
+      PURGE_EC2_INSTANCES         = tostring(var.purge_ec2_instances)
+      PURGE_NAT_GATEWAYS          = tostring(var.purge_nat_gateways)
+      PURGE_EBS_VOLUMES           = tostring(var.purge_ebs_volumes)
+      PURGE_RDS_INSTANCES         = tostring(var.purge_rds_instances)
+      PURGE_LOAD_BALANCERS        = tostring(var.purge_load_balancers)
+      PURGE_SECURITY_GROUPS       = tostring(var.purge_security_groups)
+      PURGE_AUTO_SCALING_GROUPS   = tostring(var.purge_auto_scaling_groups)
+      PURGE_ECS_CLUSTERS          = tostring(var.purge_ecs_clusters)
+      PURGE_ELASTICACHE_CLUSTERS  = tostring(var.purge_elasticache_clusters)
+      PURGE_PROMETHEUS_WORKSPACES = tostring(var.purge_prometheus_workspaces)
+      PURGE_S3_BUCKETS            = tostring(var.purge_s3_buckets)
+      PURGE_IAM_ROLES             = tostring(var.purge_iam_roles)
+      PURGE_IAM_USERS             = tostring(var.purge_iam_users)
+      PURGE_VPCS                  = tostring(var.purge_vpcs)
+      EXTRA_IMMUNE_IAM_ARNS       = jsonencode(var.extra_immune_iam_arns)
     }
   }
 }
@@ -197,3 +280,12 @@ resource "aws_lambda_permission" "allow_eventbridge" {
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.purge_schedule.arn
 }
+
+resource "aws_iam_user" "idd_admin" {
+  name = "idd-admin"
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+

@@ -1,6 +1,13 @@
 terraform {
   required_version = ">= 1.5"
 
+  backend "s3" {
+    bucket  = "heliopause-state-idd-llc-dev"
+    key     = "heliopause/statefiles/heliopause.tfstate"
+    region  = "us-east-1"
+    profile = "idd_llc"
+  }
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"

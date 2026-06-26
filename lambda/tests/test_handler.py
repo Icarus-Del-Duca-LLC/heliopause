@@ -14,6 +14,9 @@ from handler import (
     scan_ebs_volumes,
     scan_rds_instances,
     scan_load_balancers,
+    scan_security_groups,
+    scan_auto_scaling_groups,
+    scan_ecs_clusters,
     evaluate_purge_plan,
     state_file_exists,
     publish_to_sns,
@@ -249,3 +252,82 @@ def test_publish_to_sns(mock_sns):
         Subject="Test Subject",
         Message="Test Message"
     )
+
+
+@patch("handler.ec2_client")
+@patch("handler.rds_client")
+@patch("handler.elb_client")
+@patch("handler.autoscaling_client")
+@patch("handler.ecs_client")
+def test_evaluate_purge_plan_live(mock_ecs, mock_asg, mock_elb, mock_rds, mock_ec2):
+    """Test evaluating purge plan and deleting resources when dry-run is disabled."""
+    resource_plan = {
+        "ec2_instances": [{"id": "i-123"}],
+        "nat_gateways": [{"id": "nat-123"}],
+        "ebs_volumes": [{"id": "vol-123"}],
+        "rds_instances": [{"id": "db-123"}],
+        "load_balancers": [{"arn": "arn:aws:elb:123"}],
+        "security_groups": [{"id": "sg-123"}],
+        "auto_scaling_groups": [{"id": "asg-123"}],
+        "ecs_clusters": [{"id": "cluster-123"}],
+    }
+
+    result = evaluate_purge_plan(resource_plan, False)
+
+    assert result["dry_run"] is False
+    assert "i-123" in result["deleted"]["ec2_instances"]
+    assert "nat-123" in result["deleted"]["nat_gateways"]
+    assert "vol-123" in result["deleted"]["ebs_volumes"]
+    assert "db-123" in result["deleted"]["rds_instances"]
+    assert "arn:aws:elb:123" in result["deleted"]["load_balancers"]
+    assert "sg-123" in result["deleted"]["security_groups"]
+    assert "asg-123" in result["deleted"]["auto_scaling_groups"]
+    assert "cluster-123" in result["deleted"]["ecs_clusters"]
+
+    mock_ec2.terminate_instances.assert_called_once_with(InstanceIds=["i-123"])
+    mock_ec2.delete_nat_gateway.assert_called_once_with(NatGatewayId="nat-123")
+    mock_ec2.delete_volume.assert_called_once_with(VolumeId="vol-123")
+    mock_rds.delete_db_instance.assert_called_once_with(DBInstanceIdentifier="db-123", SkipFinalSnapshot=True)
+    mock_elb.delete_load_balancer.assert_called_once_with(LoadBalancerArn="arn:aws:elb:123")
+    mock_ec2.delete_security_group.assert_called_once_with(GroupId="sg-123")
+    mock_asg.delete_auto_scaling_group.assert_called_once_with(AutoScalingGroupName="asg-123", ForceDelete=True)
+    mock_ecs.delete_cluster.assert_called_once_with(cluster="cluster-123")
+
+
+@patch("handler.ec2_client")
+def test_scan_security_groups(mock_ec2):
+    """Test scanning security groups."""
+    mock_ec2.describe_security_groups.return_value = {
+        "SecurityGroups": [
+            {"GroupId": "sg-123", "GroupName": "test-sg", "VpcId": "vpc-123"},
+            {"GroupId": "sg-default", "GroupName": "default", "VpcId": "vpc-123"},
+        ]
+    }
+    result = scan_security_groups(set())
+    assert len(result) == 1
+    assert result[0]["id"] == "sg-123"
+
+
+@patch("handler.autoscaling_client")
+def test_scan_auto_scaling_groups(mock_asg):
+    """Test scanning Auto Scaling Groups."""
+    mock_paginator = MagicMock()
+    mock_asg.get_paginator.return_value = mock_paginator
+    mock_paginator.paginate.return_value = [
+        {"AutoScalingGroups": [{"AutoScalingGroupName": "asg-123", "AutoScalingGroupARN": "arn:aws:asg:123", "Status": "Healthy"}]}
+    ]
+    result = scan_auto_scaling_groups(set())
+    assert len(result) == 1
+    assert result[0]["id"] == "asg-123"
+
+
+@patch("handler.ecs_client")
+def test_scan_ecs_clusters(mock_ecs):
+    """Test scanning ECS clusters."""
+    mock_ecs.list_clusters.return_value = {"clusterArns": ["arn:aws:ecs:123"]}
+    mock_ecs.describe_clusters.return_value = {
+        "clusters": [{"clusterName": "cluster-123", "clusterArn": "arn:aws:ecs:123", "status": "ACTIVE"}]
+    }
+    result = scan_ecs_clusters(set())
+    assert len(result) == 1
+    assert result[0]["id"] == "cluster-123"

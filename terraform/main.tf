@@ -128,6 +128,8 @@ data "aws_iam_policy_document" "lambda_policy" {
       "rds:Describe*",
       "elasticloadbalancing:Describe*",
       "ecs:Describe*",
+      "ecs:List*",
+      "autoscaling:Describe*",
       "cloudwatch:Describe*",
       "ssm:GetParameter"
     ]
@@ -144,8 +146,11 @@ data "aws_iam_policy_document" "lambda_policy" {
       "ec2:DeleteRoute",
       "ec2:DeleteRouteTable",
       "ec2:DeleteVpc",
+      "ec2:DeleteSecurityGroup",
       "rds:DeleteDBInstance",
-      "elasticloadbalancing:DeleteLoadBalancer"
+      "elasticloadbalancing:DeleteLoadBalancer",
+      "autoscaling:DeleteAutoScalingGroup",
+      "ecs:DeleteCluster"
     ]
     resources = ["*"]
   }

@@ -29,6 +29,8 @@ ec2_client = LazyClient("ec2")
 rds_client = LazyClient("rds")
 elb_client = LazyClient("elbv2")
 sns_client = LazyClient("sns")
+autoscaling_client = LazyClient("autoscaling")
+ecs_client = LazyClient("ecs")
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -157,6 +159,9 @@ def scan_for_purge_candidates(immunity_ids: Set[str]) -> Dict[str, List[Dict[str
         "ebs_volumes": [],
         "rds_instances": [],
         "load_balancers": [],
+        "security_groups": [],
+        "auto_scaling_groups": [],
+        "ecs_clusters": [],
     }
 
     candidates["ec2_instances"] = scan_ec2_instances(immunity_ids)
@@ -164,6 +169,9 @@ def scan_for_purge_candidates(immunity_ids: Set[str]) -> Dict[str, List[Dict[str
     candidates["ebs_volumes"] = scan_ebs_volumes(immunity_ids)
     candidates["rds_instances"] = scan_rds_instances(immunity_ids)
     candidates["load_balancers"] = scan_load_balancers(immunity_ids)
+    candidates["security_groups"] = scan_security_groups(immunity_ids)
+    candidates["auto_scaling_groups"] = scan_auto_scaling_groups(immunity_ids)
+    candidates["ecs_clusters"] = scan_ecs_clusters(immunity_ids)
 
     return candidates
 
@@ -234,16 +242,161 @@ def scan_load_balancers(immunity_ids: Set[str]) -> List[Dict[str, Any]]:
     return balancers
 
 
+def scan_security_groups(immunity_ids: Set[str]) -> List[Dict[str, Any]]:
+    groups: List[Dict[str, Any]] = []
+    response = ec2_client.describe_security_groups()
+    for sg in response.get("SecurityGroups", []):
+        sg_id = sg.get("GroupId")
+        sg_name = sg.get("GroupName")
+        if sg_name == "default":
+            continue
+        if sg_id not in immunity_ids and sg_name not in immunity_ids:
+            groups.append({
+                "id": sg_id,
+                "name": sg_name,
+                "vpc_id": sg.get("VpcId")
+            })
+    return groups
+
+
+def scan_auto_scaling_groups(immunity_ids: Set[str]) -> List[Dict[str, Any]]:
+    groups: List[Dict[str, Any]] = []
+    paginator = autoscaling_client.get_paginator("describe_auto_scaling_groups")
+    for page in paginator.paginate():
+        for asg in page.get("AutoScalingGroups", []):
+            asg_name = asg.get("AutoScalingGroupName")
+            asg_arn = asg.get("AutoScalingGroupARN")
+            if asg_name not in immunity_ids and asg_arn not in immunity_ids:
+                groups.append({
+                    "id": asg_name,
+                    "arn": asg_arn,
+                    "status": asg.get("Status")
+                })
+    return groups
+
+
+def scan_ecs_clusters(immunity_ids: Set[str]) -> List[Dict[str, Any]]:
+    clusters: List[Dict[str, Any]] = []
+    response = ecs_client.list_clusters()
+    cluster_arns = response.get("clusterArns", [])
+    if cluster_arns:
+        desc_response = ecs_client.describe_clusters(clusters=cluster_arns)
+        for cluster in desc_response.get("clusters", []):
+            cluster_name = cluster.get("clusterName")
+            cluster_arn = cluster.get("clusterArn")
+            if cluster_name not in immunity_ids and cluster_arn not in immunity_ids:
+                clusters.append({
+                    "id": cluster_name,
+                    "arn": cluster_arn,
+                    "status": cluster.get("status")
+                })
+    return clusters
+
+
 def evaluate_purge_plan(resource_plan: Dict[str, List[Dict[str, Any]]], dry_run: bool) -> Dict[str, Any]:
-    """Build the final purge plan. This function is a safe stub for future destruction logic."""
+    """Build the final purge plan and execute deletion if dry-run is disabled."""
     result = {
         "dry_run": dry_run,
         "summary": {k: len(v) for k, v in resource_plan.items()},
         "resources": resource_plan,
-        "message": "No destructive actions were executed. Implement purge logic in evaluate_purge_plan().",
+        "deleted": {k: [] for k in resource_plan.keys()},
+        "failures": {k: [] for k in resource_plan.keys()},
+        "message": "Dry-run enabled. No resources were deleted."
     }
 
     if not dry_run:
-        result["message"] = "Dry-run disabled. Purge operations are not yet implemented in this framework."
+        logger.info("Dry-run is disabled. Executing resource purge...")
+
+        # 1. EC2 Instances
+        for instance in resource_plan.get("ec2_instances", []):
+            instance_id = instance["id"]
+            try:
+                logger.info("Terminating EC2 instance: %s", instance_id)
+                ec2_client.terminate_instances(InstanceIds=[instance_id])
+                result["deleted"]["ec2_instances"].append(instance_id)
+            except Exception as exc:
+                logger.error("Failed to terminate EC2 instance %s: %s", instance_id, exc)
+                result["failures"]["ec2_instances"].append({"id": instance_id, "error": str(exc)})
+
+        # 2. NAT Gateways
+        for gateway in resource_plan.get("nat_gateways", []):
+            gw_id = gateway["id"]
+            try:
+                logger.info("Deleting NAT Gateway: %s", gw_id)
+                ec2_client.delete_nat_gateway(NatGatewayId=gw_id)
+                result["deleted"]["nat_gateways"].append(gw_id)
+            except Exception as exc:
+                logger.error("Failed to delete NAT Gateway %s: %s", gw_id, exc)
+                result["failures"]["nat_gateways"].append({"id": gw_id, "error": str(exc)})
+
+        # 3. EBS Volumes
+        for volume in resource_plan.get("ebs_volumes", []):
+            vol_id = volume["id"]
+            try:
+                logger.info("Deleting EBS volume: %s", vol_id)
+                ec2_client.delete_volume(VolumeId=vol_id)
+                result["deleted"]["ebs_volumes"].append(vol_id)
+            except Exception as exc:
+                logger.error("Failed to delete EBS volume %s: %s", vol_id, exc)
+                result["failures"]["ebs_volumes"].append({"id": vol_id, "error": str(exc)})
+
+        # 4. RDS Instances
+        for db in resource_plan.get("rds_instances", []):
+            db_id = db["id"]
+            try:
+                logger.info("Deleting RDS DB instance: %s", db_id)
+                rds_client.delete_db_instance(DBInstanceIdentifier=db_id, SkipFinalSnapshot=True)
+                result["deleted"]["rds_instances"].append(db_id)
+            except Exception as exc:
+                logger.error("Failed to delete RDS instance %s: %s", db_id, exc)
+                result["failures"]["rds_instances"].append({"id": db_id, "error": str(exc)})
+
+        # 5. Load Balancers
+        for lb in resource_plan.get("load_balancers", []):
+            lb_arn = lb["arn"]
+            try:
+                logger.info("Deleting Load Balancer: %s", lb_arn)
+                elb_client.delete_load_balancer(LoadBalancerArn=lb_arn)
+                result["deleted"]["load_balancers"].append(lb_arn)
+            except Exception as exc:
+                logger.error("Failed to delete Load Balancer %s: %s", lb_arn, exc)
+                result["failures"]["load_balancers"].append({"arn": lb_arn, "error": str(exc)})
+
+        # 6. Security Groups
+        for sg in resource_plan.get("security_groups", []):
+            sg_id = sg["id"]
+            try:
+                logger.info("Deleting Security Group: %s", sg_id)
+                ec2_client.delete_security_group(GroupId=sg_id)
+                result["deleted"]["security_groups"].append(sg_id)
+            except Exception as exc:
+                logger.error("Failed to delete Security Group %s: %s", sg_id, exc)
+                result["failures"]["security_groups"].append({"id": sg_id, "error": str(exc)})
+
+        # 7. Auto Scaling Groups
+        for asg in resource_plan.get("auto_scaling_groups", []):
+            asg_name = asg["id"]
+            try:
+                logger.info("Deleting Auto Scaling Group: %s", asg_name)
+                autoscaling_client.delete_auto_scaling_group(AutoScalingGroupName=asg_name, ForceDelete=True)
+                result["deleted"]["auto_scaling_groups"].append(asg_name)
+            except Exception as exc:
+                logger.error("Failed to delete Auto Scaling Group %s: %s", asg_name, exc)
+                result["failures"]["auto_scaling_groups"].append({"id": asg_name, "error": str(exc)})
+
+        # 8. ECS Clusters
+        for cluster in resource_plan.get("ecs_clusters", []):
+            cluster_name = cluster["id"]
+            try:
+                logger.info("Deleting ECS Cluster: %s", cluster_name)
+                ecs_client.delete_cluster(cluster=cluster_name)
+                result["deleted"]["ecs_clusters"].append(cluster_name)
+            except Exception as exc:
+                logger.error("Failed to delete ECS Cluster %s: %s", cluster_name, exc)
+                result["failures"]["ecs_clusters"].append({"id": cluster_name, "error": str(exc)})
+
+        total_success = sum(len(v) for v in result["deleted"].values())
+        total_fail = sum(len(v) for v in result["failures"].values())
+        result["message"] = f"Purge executed: {total_success} resources successfully deleted, {total_fail} failures."
 
     return result

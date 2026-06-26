@@ -10,6 +10,7 @@ jobs:
   terraform:
     name: Terraform Validate
     runs-on: ubuntu-latest
+    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
     defaults:
       run:
         working-directory: ./terraform
@@ -35,6 +36,7 @@ jobs:
   python-tests:
     name: Python Unit Tests
     runs-on: ubuntu-latest
+    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
     env:
       AWS_DEFAULT_REGION: us-east-1
     defaults:

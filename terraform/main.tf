@@ -169,6 +169,13 @@ resource "aws_sns_topic" "notifications" {
   name = "heliopause-notifications"
 }
 
+resource "aws_sns_topic_subscription" "email_subscription" {
+  count     = var.notification_email != null ? 1 : 0
+  topic_arn = aws_sns_topic.notifications.arn
+  protocol  = "email"
+  endpoint  = var.notification_email
+}
+
 data "archive_file" "lambda_package" {
   type        = "zip"
   source_file = "${path.module}/../lambda/handler.py"

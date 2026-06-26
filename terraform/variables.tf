@@ -57,3 +57,9 @@ variable "dry_run" {
   type        = bool
   default     = true
 }
+
+variable "notification_email" {
+  description = "Optional email address to subscribe to the SNS topic for notifications."
+  type        = string
+  default     = null
+}

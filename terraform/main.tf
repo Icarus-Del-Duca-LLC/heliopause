@@ -256,6 +256,7 @@ resource "aws_lambda_function" "heliopause" {
       PURGE_IAM_ROLES             = tostring(var.purge_iam_roles)
       PURGE_IAM_USERS             = tostring(var.purge_iam_users)
       PURGE_VPCS                  = tostring(var.purge_vpcs)
+      EXTRA_IMMUNE_IAM_ARNS       = jsonencode(var.extra_immune_iam_arns)
     }
   }
 }
@@ -279,3 +280,12 @@ resource "aws_lambda_permission" "allow_eventbridge" {
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.purge_schedule.arn
 }
+
+resource "aws_iam_user" "idd_admin" {
+  name = "idd-admin"
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+

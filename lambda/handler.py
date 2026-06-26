@@ -470,10 +470,24 @@ def get_current_role_name() -> str:
     return ""
 
 
+def get_extra_immune_iam_arns() -> Set[str]:
+    """Retrieve extra immune IAM ARNs from the environment variable."""
+    extra_immune_arns_str = os.environ.get("EXTRA_IMMUNE_IAM_ARNS", "[]")
+    try:
+        extra_immune = json.loads(extra_immune_arns_str)
+        if isinstance(extra_immune, list):
+            return {arn.strip() for arn in extra_immune if isinstance(arn, str) and arn.strip()}
+    except Exception:
+        pass
+    # Fallback to comma-separated list
+    return {arn.strip() for arn in extra_immune_arns_str.split(",") if arn.strip()}
+
+
 def scan_iam_roles(immunity_ids: Set[str]) -> List[Dict[str, Any]]:
     """Scan for custom IAM roles not in the immunity list, ignoring service roles and ourselves."""
     roles: List[Dict[str, Any]] = []
     current_role = get_current_role_name()
+    extra_immune = get_extra_immune_iam_arns()
     try:
         paginator = iam_client.get_paginator("list_roles")
         for page in paginator.paginate():
@@ -487,7 +501,9 @@ def scan_iam_roles(immunity_ids: Set[str]) -> List[Dict[str, Any]]:
                     continue
                 if role_name.startswith("AWSServiceRole"):
                     continue
-                if role_name not in immunity_ids and role_arn not in immunity_ids:
+                if (role_name not in immunity_ids and 
+                    role_arn not in immunity_ids and 
+                    role_arn not in extra_immune):
                     roles.append({
                         "id": role_name,
                         "arn": role_arn,
@@ -501,15 +517,16 @@ def scan_iam_roles(immunity_ids: Set[str]) -> List[Dict[str, Any]]:
 def scan_iam_users(immunity_ids: Set[str]) -> List[Dict[str, Any]]:
     """Scan for IAM users not in the immunity list."""
     users: List[Dict[str, Any]] = []
+    extra_immune = get_extra_immune_iam_arns()
     try:
         paginator = iam_client.get_paginator("list_users")
         for page in paginator.paginate():
             for user in page.get("Users", []):
                 user_name = user.get("UserName")
                 user_arn = user.get("Arn")
-                if user_name == "idd-admin":
-                    continue
-                if user_name not in immunity_ids and user_arn not in immunity_ids:
+                if (user_name not in immunity_ids and 
+                    user_arn not in immunity_ids and 
+                    user_arn not in extra_immune):
                     users.append({
                         "id": user_name,
                         "arn": user_arn
@@ -517,6 +534,7 @@ def scan_iam_users(immunity_ids: Set[str]) -> List[Dict[str, Any]]:
     except ClientError as exc:
         logger.error("Failed to list IAM users: %s", exc)
     return users
+
 
 
 def scan_vpcs(immunity_ids: Set[str]) -> List[Dict[str, Any]]:

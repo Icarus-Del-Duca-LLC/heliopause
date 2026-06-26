@@ -28,6 +28,7 @@ from handler import (
     delete_iam_user,
     delete_vpc_resources,
     evaluate_purge_plan,
+    get_extra_immune_iam_arns,
     state_file_exists,
     publish_to_sns,
 )
@@ -604,3 +605,56 @@ def test_delete_vpc_resources(mock_ec2):
     mock_ec2.delete_security_group.assert_called_once_with(GroupId="sg-123")
     mock_ec2.delete_subnet.assert_called_once_with(SubnetId="subnet-123")
     mock_ec2.delete_vpc.assert_called_once_with(VpcId="vpc-123")
+
+
+def test_get_extra_immune_iam_arns():
+    """Test get_extra_immune_iam_arns parsing from environment."""
+    with patch.dict(os.environ, {"EXTRA_IMMUNE_IAM_ARNS": '["arn:aws:iam::123:user/test-user", "arn:aws:iam::123:role/test-role"]'}):
+        result = get_extra_immune_iam_arns()
+        assert result == {"arn:aws:iam::123:user/test-user", "arn:aws:iam::123:role/test-role"}
+
+    with patch.dict(os.environ, {"EXTRA_IMMUNE_IAM_ARNS": "arn:aws:iam::123:user/test-user, arn:aws:iam::123:role/test-role"}):
+        result = get_extra_immune_iam_arns()
+        assert result == {"arn:aws:iam::123:user/test-user", "arn:aws:iam::123:role/test-role"}
+
+    with patch.dict(os.environ, {}, clear=True):
+        result = get_extra_immune_iam_arns()
+        assert result == set()
+
+
+@patch("handler.sts_client")
+@patch("handler.iam_client")
+def test_scan_iam_roles_extra_immune(mock_iam, mock_sts):
+    """Test that roles matching EXTRA_IMMUNE_IAM_ARNS are skipped."""
+    mock_sts.get_caller_identity.return_value = {"Arn": "arn:aws:iam::123:role/heliopause-lambda-role"}
+    mock_paginator = MagicMock()
+    mock_iam.get_paginator.return_value = mock_paginator
+    mock_paginator.paginate.return_value = [
+        {"Roles": [
+            {"RoleName": "heliopause-lambda-role", "Arn": "arn:aws:iam::123:role/heliopause-lambda-role", "Path": "/"},
+            {"RoleName": "custom-role", "Arn": "arn:aws:iam::123:role/custom-role", "Path": "/"},
+            {"RoleName": "immune-role", "Arn": "arn:aws:iam::123:role/immune-role", "Path": "/"},
+        ]}
+    ]
+    with patch.dict(os.environ, {"EXTRA_IMMUNE_IAM_ARNS": '["arn:aws:iam::123:role/immune-role"]'}):
+        result = scan_iam_roles(set())
+        assert len(result) == 1
+        assert result[0]["id"] == "custom-role"
+
+
+@patch("handler.iam_client")
+def test_scan_iam_users_extra_immune(mock_iam):
+    """Test that users matching EXTRA_IMMUNE_IAM_ARNS are skipped."""
+    mock_paginator = MagicMock()
+    mock_iam.get_paginator.return_value = mock_paginator
+    mock_paginator.paginate.return_value = [
+        {"Users": [
+            {"UserName": "user-123", "Arn": "arn:aws:iam::123:user/user-123"},
+            {"UserName": "immune-user", "Arn": "arn:aws:iam::123:user/immune-user"}
+        ]}
+    ]
+    with patch.dict(os.environ, {"EXTRA_IMMUNE_IAM_ARNS": '["arn:aws:iam::123:user/immune-user"]'}):
+        result = scan_iam_users(set())
+        assert len(result) == 1
+        assert result[0]["id"] == "user-123"
+

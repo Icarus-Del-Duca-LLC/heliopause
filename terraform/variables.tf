@@ -148,3 +148,10 @@ variable "purge_vpcs" {
   default     = false
 }
 
+variable "extra_immune_iam_arns" {
+  description = "List of IAM User or Role ARNs immune from purging."
+  type        = list(string)
+  default     = []
+}
+
+

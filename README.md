@@ -38,6 +38,19 @@ Heliopause is deployed as a standalone management layer.
 - **The Trigger:** EventBridge (CloudWatch Events) on a cron schedule (for example, nightly at 00:00 UTC).
 - **The Messenger:** An SNS topic for publishing run summaries and critical alerts.
 
+## Configuration & Deployment
+
+Heliopause is configured via Terraform variables. You can customize the deployment by creating a `terraform.tfvars` file.
+
+### Optional Email Notifications
+By default, Heliopause publishes its run summaries and critical alerts to an Amazon SNS topic (`heliopause-notifications`). To receive these alerts via email, configure the `notification_email` variable:
+
+```hcl
+notification_email = "maintainers@icarusdelduca.com"
+```
+
+When this variable is set, Terraform creates an SNS email subscription for the endpoint. Upon deployment, AWS will send a subscription confirmation email to the configured address. **You must click the confirmation link in that email to start receiving notifications.**
+
 ## License
 
 Heliopause is released under the Apache License 2.0. See `LICENSE` for details.

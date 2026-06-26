@@ -507,6 +507,8 @@ def scan_iam_users(immunity_ids: Set[str]) -> List[Dict[str, Any]]:
             for user in page.get("Users", []):
                 user_name = user.get("UserName")
                 user_arn = user.get("Arn")
+                if user_name == "idd-admin":
+                    continue
                 if user_name not in immunity_ids and user_arn not in immunity_ids:
                     users.append({
                         "id": user_name,

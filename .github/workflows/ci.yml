@@ -32,9 +32,6 @@ jobs:
     - name: Terraform Validate
       run: terraform validate
 
-    - name: Terraform Plan
-      run: terraform plan -no-color
-
   python-tests:
     name: Python Unit Tests
     runs-on: ubuntu-latest

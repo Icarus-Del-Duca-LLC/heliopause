@@ -28,6 +28,12 @@ variable "lambda_function_name" {
   default     = "heliopause-cleanup"
 }
 
+variable "lambda_role_name" {
+  description = "Name for the AWS Lambda IAM execution role."
+  type        = string
+  default     = "heliopause-lambda-role"
+}
+
 variable "lambda_timeout" {
   description = "Maximum execution time for the Lambda function in seconds."
   type        = number

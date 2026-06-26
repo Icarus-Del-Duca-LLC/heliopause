@@ -9,11 +9,26 @@ from botocore.exceptions import ClientError
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-s3_client = boto3.client("s3")
-ec2_client = boto3.client("ec2")
-rds_client = boto3.client("rds")
-elb_client = boto3.client("elbv2")
-sns_client = boto3.client("sns")
+class LazyClient:
+    """A lazy loader for boto3 clients to prevent import-time side-effects."""
+    def __init__(self, service_name: str):
+        self._service_name = service_name
+        self._client = None
+
+    def _get_client(self) -> Any:
+        if self._client is None:
+            self._client = boto3.client(self._service_name)
+        return self._client
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._get_client(), name)
+
+
+s3_client = LazyClient("s3")
+ec2_client = LazyClient("ec2")
+rds_client = LazyClient("rds")
+elb_client = LazyClient("elbv2")
+sns_client = LazyClient("sns")
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -112,9 +127,9 @@ def load_state_file(bucket_name: str, key: str) -> Dict[str, Any]:
         response = s3_client.get_object(Bucket=bucket_name, Key=key)
         payload = response["Body"].read().decode("utf-8")
         return json.loads(payload)
-    except ClientError as exc:
+    except Exception as exc:
         logger.error("Unable to load state file %s from %s: %s", key, bucket_name, exc)
-        return {}
+        raise RuntimeError(f"Failed to load state file {key} from bucket {bucket_name}: {exc}") from exc
 
 
 def extract_resource_ids(state_data: Dict[str, Any]) -> Set[str]:
@@ -126,9 +141,6 @@ def extract_resource_ids(state_data: Dict[str, Any]) -> Set[str]:
             resource_id = attributes.get("id")
             if resource_id:
                 ids.add(resource_id)
-
-            for nested in instance.get("attributes", {}).get("depends_on", []):
-                ids.add(nested)
 
     return ids
 

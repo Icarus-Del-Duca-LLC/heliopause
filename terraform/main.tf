@@ -27,24 +27,35 @@ resource "random_id" "bucket_suffix" {
 
 resource "aws_s3_bucket" "state_bucket" {
   bucket = var.state_bucket_name != "" ? var.state_bucket_name : "heliopause-state-${random_id.bucket_suffix.hex}"
+}
 
-  versioning {
-    enabled = true
+resource "aws_s3_bucket_versioning" "state_bucket_versioning" {
+  bucket = aws_s3_bucket.state_bucket.id
+  versioning_configuration {
+    status = "Enabled"
   }
+}
 
-  server_side_encryption_configuration {
-    rule {
-      apply_server_side_encryption_by_default {
-        sse_algorithm = "AES256"
-      }
+resource "aws_s3_bucket_server_side_encryption_configuration" "state_bucket_encryption" {
+  bucket = aws_s3_bucket.state_bucket.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
     }
   }
+}
 
-  lifecycle_rule {
-    id      = "expire-old-state-files"
-    enabled = true
+resource "aws_s3_bucket_lifecycle_configuration" "state_bucket_lifecycle" {
+  bucket = aws_s3_bucket.state_bucket.id
 
-    prefix = var.state_prefix
+  rule {
+    id     = "expire-old-state-files"
+    status = "Enabled"
+
+    filter {
+      prefix = var.state_prefix
+    }
 
     expiration {
       days = 365
@@ -73,7 +84,7 @@ data "aws_iam_policy_document" "lambda_assume_role" {
 }
 
 resource "aws_iam_role" "lambda_execution" {
-  name               = "heliopause-lambda-role"
+  name               = var.lambda_role_name
   assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
 }
 

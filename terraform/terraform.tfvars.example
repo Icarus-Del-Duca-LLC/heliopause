@@ -1,0 +1,11 @@
+# Example values for the Heliopause Terraform deployment.
+
+aws_region       = "us-east-1"
+state_bucket_name = ""
+state_prefix      = "heliopause/statefiles/"
+core_state_file   = "heliopause.tfstate"
+lambda_function_name = "heliopause-cleanup"
+lambda_timeout      = 300
+lambda_memory_size  = 512
+schedule_expression = "cron(0 0 * * ? *)"
+dry_run            = true

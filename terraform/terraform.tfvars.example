@@ -9,3 +9,10 @@ lambda_timeout      = 300
 lambda_memory_size  = 512
 schedule_expression = "cron(0 0 * * ? *)"
 dry_run            = true
+notification_email = "alerts@yourdomain.com"
+
+# ARNs of IAM Users/Roles that should not be deleted (e.g., your admin accounts)
+extra_immune_iam_arns = [
+  "arn:aws:iam::123456789012:user/admin-user"
+]
+

@@ -1,12 +1,7 @@
 terraform {
   required_version = ">= 1.5"
 
-  backend "s3" {
-    bucket  = "heliopause-state-idd-llc-dev"
-    key     = "heliopause/statefiles/heliopause.tfstate"
-    region  = "us-east-1"
-    profile = "idd_llc"
-  }
+  backend "s3" {}
 
   required_providers {
     aws = {
@@ -281,11 +276,4 @@ resource "aws_lambda_permission" "allow_eventbridge" {
   source_arn    = aws_cloudwatch_event_rule.purge_schedule.arn
 }
 
-resource "aws_iam_user" "idd_admin" {
-  name = "idd-admin"
-
-  lifecycle {
-    prevent_destroy = true
-  }
-}
 

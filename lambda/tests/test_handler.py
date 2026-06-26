@@ -57,11 +57,11 @@ def test_lambda_handler_success(mock_publish, mock_evaluate, mock_scan, mock_bui
     mock_publish.assert_called_once()
 
 
-@patch.dict(os.environ, {"STATE_BUCKET_NAME": "test-bucket", "STATE_PREFIX": "test-prefix/", "CORE_STATE_FILE": "heliopause.tfstate", "DRY_RUN": "true", "SNS_TOPIC_ARN": "arn:aws:sns:us-east-1:123456789012:test-topic"})
+@patch.dict(os.environ, {"STATE_BUCKET_NAME": "test-bucket", "STATE_PREFIX": "test-prefix/", "CORE_STATE_FILE": "heliopause.tfstate", "DRY_RUN": "false", "SNS_TOPIC_ARN": "arn:aws:sns:us-east-1:123456789012:test-topic"})
 @patch("handler.state_file_exists")
 @patch("handler.publish_to_sns")
 def test_lambda_handler_core_file_missing(mock_publish, mock_exists):
-    """Test lambda_handler aborts when core state file is missing."""
+    """Test lambda_handler aborts when core state file is missing and dry-run is disabled."""
     mock_exists.return_value = False
 
     event = {}
@@ -70,6 +70,30 @@ def test_lambda_handler_core_file_missing(mock_publish, mock_exists):
     with pytest.raises(RuntimeError, match="Core state file 'test-prefix/heliopause.tfstate' is missing"):
         lambda_handler(event, context)
 
+    mock_publish.assert_called_once()
+
+
+@patch.dict(os.environ, {"STATE_BUCKET_NAME": "test-bucket", "STATE_PREFIX": "test-prefix/", "CORE_STATE_FILE": "heliopause.tfstate", "DRY_RUN": "true", "SNS_TOPIC_ARN": "arn:aws:sns:us-east-1:123456789012:test-topic"})
+@patch("handler.state_file_exists")
+@patch("handler.list_state_files")
+@patch("handler.build_immunity_list")
+@patch("handler.scan_for_purge_candidates")
+@patch("handler.evaluate_purge_plan")
+@patch("handler.publish_to_sns")
+def test_lambda_handler_core_file_missing_dry_run(mock_publish, mock_evaluate, mock_scan, mock_build, mock_list, mock_exists):
+    """Test lambda_handler proceeds when core state file is missing but dry-run is enabled."""
+    mock_exists.return_value = False
+    mock_list.return_value = []
+    mock_build.return_value = set()
+    mock_scan.return_value = {"ec2_instances": []}
+    mock_evaluate.return_value = {"dry_run": True, "summary": {"ec2_instances": 0}}
+
+    event = {}
+    context = MagicMock()
+
+    result = lambda_handler(event, context)
+
+    assert result["dry_run"] is True
     mock_publish.assert_called_once()
 
 

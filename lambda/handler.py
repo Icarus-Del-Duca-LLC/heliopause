@@ -44,11 +44,15 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # Check for core state file presence
     core_state_key = f"{state_prefix}{core_state_file}"
     if not state_file_exists(state_bucket, core_state_key):
-        error_msg = f"Core state file '{core_state_key}' is missing. Aborting deletion to prevent self-destruction."
-        logger.error(error_msg)
-        if sns_topic_arn:
-            publish_to_sns(sns_topic_arn, "Heliopause Alert", error_msg)
-        raise RuntimeError(error_msg)
+        error_msg = f"Core state file '{core_state_key}' is missing."
+        if dry_run:
+            logger.warning("%s Proceeding with dry-run evaluation.", error_msg)
+        else:
+            full_error = f"{error_msg} Aborting deletion to prevent self-destruction."
+            logger.error(full_error)
+            if sns_topic_arn:
+                publish_to_sns(sns_topic_arn, "Heliopause Alert", full_error)
+            raise RuntimeError(full_error)
 
     state_files = list_state_files(state_bucket, state_prefix)
     immunity_ids = build_immunity_list(state_bucket, state_files)

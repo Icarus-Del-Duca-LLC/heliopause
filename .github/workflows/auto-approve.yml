@@ -10,8 +10,7 @@ jobs:
     permissions:
       pull-requests: write
     if: |
-      github.actor == 'github-actions[bot]' ||
-      github.actor == 'release-please[bot]' ||
+      (github.actor == 'github-actions[bot]' || github.actor == 'release-please[bot]') &&
       startsWith(github.head_ref, 'release-please--')
     steps:
       - uses: hmarr/auto-approve-action@v4

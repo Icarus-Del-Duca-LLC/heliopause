@@ -63,3 +63,22 @@ variable "notification_email" {
   type        = string
   default     = null
 }
+
+variable "purge_data_stores" {
+  description = "Toggles purging of RDS, ElastiCache, and AMP resources."
+  type        = bool
+  default     = true
+}
+
+variable "purge_storage_buckets" {
+  description = "Toggles purging of S3 buckets (contents emptied first)."
+  type        = bool
+  default     = true
+}
+
+variable "purge_custom_iam" {
+  description = "Toggles purging of IAM roles and users not whitelisted in state files."
+  type        = bool
+  default     = true
+}
+

@@ -131,7 +131,15 @@ data "aws_iam_policy_document" "lambda_policy" {
       "ecs:List*",
       "autoscaling:Describe*",
       "cloudwatch:Describe*",
-      "ssm:GetParameter"
+      "ssm:GetParameter",
+      "elasticache:Describe*",
+      "aps:ListWorkspaces",
+      "aps:DescribeWorkspace",
+      "s3:ListAllMyBuckets",
+      "s3:ListBucketVersions",
+      "s3:ListBucketMultipartUploads",
+      "iam:List*",
+      "iam:Get*"
     ]
     resources = ["*"]
   }
@@ -147,10 +155,40 @@ data "aws_iam_policy_document" "lambda_policy" {
       "ec2:DeleteRouteTable",
       "ec2:DeleteVpc",
       "ec2:DeleteSecurityGroup",
+      "ec2:DeleteVpcEndpoints",
+      "ec2:DeleteVpcPeeringConnection",
+      "ec2:DeleteNetworkInterface",
+      "ec2:DetachNetworkInterface",
+      "ec2:DetachInternetGateway",
+      "ec2:DeleteInternetGateway",
+      "ec2:DisassociateRouteTable",
+      "ec2:RevokeSecurityGroupIngress",
+      "ec2:RevokeSecurityGroupEgress",
       "rds:DeleteDBInstance",
       "elasticloadbalancing:DeleteLoadBalancer",
       "autoscaling:DeleteAutoScalingGroup",
-      "ecs:DeleteCluster"
+      "ecs:DeleteCluster",
+      "elasticache:DeleteCacheCluster",
+      "elasticache:DeleteReplicationGroup",
+      "aps:DeleteWorkspace",
+      "s3:DeleteBucket",
+      "s3:DeleteObject",
+      "s3:DeleteObjectVersion",
+      "s3:AbortMultipartUpload",
+      "iam:DeleteRole",
+      "iam:DeleteUser",
+      "iam:DeleteRolePolicy",
+      "iam:DeleteUserPolicy",
+      "iam:DetachRolePolicy",
+      "iam:DetachUserPolicy",
+      "iam:DeleteLoginProfile",
+      "iam:DeleteAccessKey",
+      "iam:DeleteSigningCertificate",
+      "iam:DeleteSSHPublicKey",
+      "iam:DeleteServiceSpecificCredentials",
+      "iam:DeactivateMFADevice",
+      "iam:DeleteVirtualMFADevice",
+      "iam:RemoveRoleFromInstanceProfile"
     ]
     resources = ["*"]
   }
@@ -199,11 +237,14 @@ resource "aws_lambda_function" "heliopause" {
 
   environment {
     variables = {
-      STATE_BUCKET_NAME = aws_s3_bucket.state_bucket.id
-      STATE_PREFIX      = var.state_prefix
-      CORE_STATE_FILE   = var.core_state_file
-      DRY_RUN           = tostring(var.dry_run)
-      SNS_TOPIC_ARN     = aws_sns_topic.notifications.arn
+      STATE_BUCKET_NAME     = aws_s3_bucket.state_bucket.id
+      STATE_PREFIX          = var.state_prefix
+      CORE_STATE_FILE       = var.core_state_file
+      DRY_RUN               = tostring(var.dry_run)
+      SNS_TOPIC_ARN         = aws_sns_topic.notifications.arn
+      PURGE_DATA_STORES     = tostring(var.purge_data_stores)
+      PURGE_STORAGE_BUCKETS = tostring(var.purge_storage_buckets)
+      PURGE_CUSTOM_IAM      = tostring(var.purge_custom_iam)
     }
   }
 }

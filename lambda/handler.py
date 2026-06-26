@@ -31,6 +31,10 @@ elb_client = LazyClient("elbv2")
 sns_client = LazyClient("sns")
 autoscaling_client = LazyClient("autoscaling")
 ecs_client = LazyClient("ecs")
+elasticache_client = LazyClient("elasticache")
+amp_client = LazyClient("amp")
+iam_client = LazyClient("iam")
+sts_client = LazyClient("sts")
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -40,6 +44,11 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     core_state_file = os.environ.get("CORE_STATE_FILE", "heliopause.tfstate")
     dry_run = os.environ.get("DRY_RUN", "true").lower() == "true"
     sns_topic_arn = os.environ.get("SNS_TOPIC_ARN")
+
+    # Feature toggles
+    purge_data_stores = os.environ.get("PURGE_DATA_STORES", "true").lower() == "true"
+    purge_storage_buckets = os.environ.get("PURGE_STORAGE_BUCKETS", "true").lower() == "true"
+    purge_custom_iam = os.environ.get("PURGE_CUSTOM_IAM", "true").lower() == "true"
 
     logger.info("Heliopause starting: dry_run=%s, bucket=%s, prefix=%s, core_file=%s", dry_run, state_bucket, state_prefix, core_state_file)
 
@@ -61,17 +70,18 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     logger.info("Immunity list contains %d resource IDs", len(immunity_ids))
 
-    resource_plan = scan_for_purge_candidates(immunity_ids)
-    result = evaluate_purge_plan(resource_plan, dry_run)
+    resource_plan = scan_for_purge_candidates(
+        immunity_ids,
+        purge_data_stores=purge_data_stores,
+        purge_storage_buckets=purge_storage_buckets,
+        purge_custom_iam=purge_custom_iam
+    )
+    result = evaluate_purge_plan(resource_plan, dry_run, context=context, immunity_ids=immunity_ids)
 
-    # Publish summary to SNS
+    # Publish summary to SNS as JSON payload
     if sns_topic_arn:
-        total_deleted = sum(result["summary"].values()) if not dry_run else 0
-        if dry_run:
-            message = f"Dry-run completed. {sum(result['summary'].values())} AWS resources would be deleted. See CloudWatch logs for details."
-        else:
-            message = f"{total_deleted} AWS resources deleted in this run. See CloudWatch logs for details."
-        publish_to_sns(sns_topic_arn, "Heliopause Summary", message)
+        subject = "Heliopause Dry-Run Summary" if dry_run else "Heliopause Purge Summary"
+        publish_to_sns(sns_topic_arn, subject, json.dumps(result, default=str, indent=2))
 
     logger.info("Heliopause complete: %s", json.dumps(result, default=str))
     return result
@@ -151,7 +161,12 @@ def extract_resource_ids(state_data: Dict[str, Any]) -> Set[str]:
     return ids
 
 
-def scan_for_purge_candidates(immunity_ids: Set[str]) -> Dict[str, List[Dict[str, Any]]]:
+def scan_for_purge_candidates(
+    immunity_ids: Set[str],
+    purge_data_stores: bool,
+    purge_storage_buckets: bool,
+    purge_custom_iam: bool
+) -> Dict[str, List[Dict[str, Any]]]:
     """Scan AWS resources and identify candidates not present in the immunity list."""
     candidates: Dict[str, List[Dict[str, Any]]] = {
         "ec2_instances": [],
@@ -162,16 +177,38 @@ def scan_for_purge_candidates(immunity_ids: Set[str]) -> Dict[str, List[Dict[str
         "security_groups": [],
         "auto_scaling_groups": [],
         "ecs_clusters": [],
+        "elasticache_clusters": [],
+        "prometheus_workspaces": [],
+        "s3_buckets": [],
+        "iam_roles": [],
+        "iam_users": [],
+        "vpcs": [],
     }
 
+    # Core networking/compute (always scanned)
     candidates["ec2_instances"] = scan_ec2_instances(immunity_ids)
     candidates["nat_gateways"] = scan_nat_gateways(immunity_ids)
     candidates["ebs_volumes"] = scan_ebs_volumes(immunity_ids)
-    candidates["rds_instances"] = scan_rds_instances(immunity_ids)
     candidates["load_balancers"] = scan_load_balancers(immunity_ids)
     candidates["security_groups"] = scan_security_groups(immunity_ids)
     candidates["auto_scaling_groups"] = scan_auto_scaling_groups(immunity_ids)
     candidates["ecs_clusters"] = scan_ecs_clusters(immunity_ids)
+    candidates["vpcs"] = scan_vpcs(immunity_ids)
+
+    # Data stores (toggled)
+    if purge_data_stores:
+        candidates["rds_instances"] = scan_rds_instances(immunity_ids)
+        candidates["elasticache_clusters"] = scan_elasticache_clusters(immunity_ids)
+        candidates["prometheus_workspaces"] = scan_prometheus_workspaces(immunity_ids)
+
+    # S3 Buckets (toggled)
+    if purge_storage_buckets:
+        candidates["s3_buckets"] = scan_s3_buckets(immunity_ids)
+
+    # IAM resources (toggled)
+    if purge_custom_iam:
+        candidates["iam_roles"] = scan_iam_roles(immunity_ids)
+        candidates["iam_users"] = scan_iam_users(immunity_ids)
 
     return candidates
 
@@ -293,8 +330,511 @@ def scan_ecs_clusters(immunity_ids: Set[str]) -> List[Dict[str, Any]]:
     return clusters
 
 
-def evaluate_purge_plan(resource_plan: Dict[str, List[Dict[str, Any]]], dry_run: bool) -> Dict[str, Any]:
+def scan_elasticache_clusters(immunity_ids: Set[str]) -> List[Dict[str, Any]]:
+    """Scan for ElastiCache clusters and replication groups not in the immunity list."""
+    clusters: List[Dict[str, Any]] = []
+    
+    # 1. Individual Cache Clusters
+    try:
+        paginator = elasticache_client.get_paginator("describe_cache_clusters")
+        for page in paginator.paginate():
+            for cluster in page.get("CacheClusters", []):
+                cluster_id = cluster.get("CacheClusterId")
+                # Skip if it is part of a replication group (replication groups are deleted as a whole)
+                if cluster.get("ReplicationGroupId"):
+                    continue
+                if cluster_id not in immunity_ids:
+                    clusters.append({
+                        "id": cluster_id,
+                        "engine": cluster.get("Engine"),
+                        "status": cluster.get("CacheClusterStatus"),
+                        "is_replication_group": False
+                    })
+    except ClientError as exc:
+        logger.error("Failed to describe ElastiCache clusters: %s", exc)
+
+    # 2. Replication Groups
+    try:
+        paginator = elasticache_client.get_paginator("describe_replication_groups")
+        for page in paginator.paginate():
+            for rg in page.get("ReplicationGroups", []):
+                rg_id = rg.get("ReplicationGroupId")
+                if rg_id not in immunity_ids:
+                    clusters.append({
+                        "id": rg_id,
+                        "status": rg.get("Status"),
+                        "is_replication_group": True
+                    })
+    except ClientError as exc:
+        logger.error("Failed to describe ElastiCache replication groups: %s", exc)
+
+    return clusters
+
+
+def scan_prometheus_workspaces(immunity_ids: Set[str]) -> List[Dict[str, Any]]:
+    """Scan for Amazon Managed Prometheus (AMP) workspaces not in the immunity list."""
+    workspaces: List[Dict[str, Any]] = []
+    try:
+        next_token = None
+        while True:
+            kwargs = {}
+            if next_token:
+                kwargs["nextToken"] = next_token
+            response = amp_client.list_workspaces(**kwargs)
+            for ws in response.get("workspaces", []):
+                ws_id = ws.get("workspaceId")
+                ws_arn = ws.get("arn")
+                if ws_id not in immunity_ids and ws_arn not in immunity_ids:
+                    workspaces.append({
+                        "id": ws_id,
+                        "arn": ws_arn,
+                        "status": ws.get("status", {}).get("statusCode")
+                    })
+            next_token = response.get("nextToken")
+            if not next_token:
+                break
+    except ClientError as exc:
+        logger.error("Failed to list AMP workspaces: %s", exc)
+    return workspaces
+
+
+def scan_s3_buckets(immunity_ids: Set[str]) -> List[Dict[str, Any]]:
+    """Scan for S3 buckets not in the immunity list, excluding the Heliopause state bucket."""
+    buckets: List[Dict[str, Any]] = []
+    state_bucket = os.environ.get("STATE_BUCKET_NAME")
+    try:
+        response = s3_client.list_buckets()
+        for bucket in response.get("Buckets", []):
+            name = bucket.get("Name")
+            if name == state_bucket:
+                continue
+            if name not in immunity_ids:
+                buckets.append({
+                    "id": name,
+                    "creation_date": bucket.get("CreationDate")
+                })
+    except ClientError as exc:
+        logger.error("Failed to list S3 buckets: %s", exc)
+    return buckets
+
+
+def get_current_role_name() -> str:
+    """Retrieve the current Lambda execution role name using STS caller identity."""
+    try:
+        arn = sts_client.get_caller_identity()["Arn"]
+        if "assumed-role" in arn:
+            parts = arn.split("/")
+            if len(parts) >= 2:
+                return parts[1]
+        else:
+            return arn.split("/")[-1]
+    except Exception as exc:
+        logger.warning("Could not determine current role name: %s", exc)
+    return ""
+
+
+def scan_iam_roles(immunity_ids: Set[str]) -> List[Dict[str, Any]]:
+    """Scan for custom IAM roles not in the immunity list, ignoring service roles and ourselves."""
+    roles: List[Dict[str, Any]] = []
+    current_role = get_current_role_name()
+    try:
+        paginator = iam_client.get_paginator("list_roles")
+        for page in paginator.paginate():
+            for role in page.get("Roles", []):
+                role_name = role.get("RoleName")
+                role_arn = role.get("Arn")
+                path = role.get("Path", "")
+                if path.startswith("/aws-service-role/"):
+                    continue
+                if role_name == current_role or role_arn == current_role:
+                    continue
+                if role_name.startswith("AWSServiceRole"):
+                    continue
+                if role_name not in immunity_ids and role_arn not in immunity_ids:
+                    roles.append({
+                        "id": role_name,
+                        "arn": role_arn,
+                        "path": path
+                    })
+    except ClientError as exc:
+        logger.error("Failed to list IAM roles: %s", exc)
+    return roles
+
+
+def scan_iam_users(immunity_ids: Set[str]) -> List[Dict[str, Any]]:
+    """Scan for IAM users not in the immunity list."""
+    users: List[Dict[str, Any]] = []
+    try:
+        paginator = iam_client.get_paginator("list_users")
+        for page in paginator.paginate():
+            for user in page.get("Users", []):
+                user_name = user.get("UserName")
+                user_arn = user.get("Arn")
+                if user_name not in immunity_ids and user_arn not in immunity_ids:
+                    users.append({
+                        "id": user_name,
+                        "arn": user_arn
+                    })
+    except ClientError as exc:
+        logger.error("Failed to list IAM users: %s", exc)
+    return users
+
+
+def scan_vpcs(immunity_ids: Set[str]) -> List[Dict[str, Any]]:
+    """Scan for non-default VPCs not in the immunity list."""
+    vpcs: List[Dict[str, Any]] = []
+    try:
+        response = ec2_client.describe_vpcs()
+        for vpc in response.get("Vpcs", []):
+            vpc_id = vpc.get("VpcId")
+            if vpc.get("IsDefault", False):
+                continue
+            if vpc_id not in immunity_ids:
+                vpcs.append({
+                    "id": vpc_id,
+                    "cidr_block": vpc.get("CidrBlock")
+                })
+    except ClientError as exc:
+        logger.error("Failed to describe VPCs: %s", exc)
+    return vpcs
+
+
+def delete_s3_bucket_contents(bucket_name: str) -> None:
+    """Recursively delete all object versions, delete markers, and abort multipart uploads."""
+    try:
+        paginator = s3_client.get_paginator("list_object_versions")
+        for page in paginator.paginate(Bucket=bucket_name):
+            objects_to_delete = []
+            
+            for version in page.get("Versions", []):
+                objects_to_delete.append({
+                    "Key": version["Key"],
+                    "VersionId": version["VersionId"]
+                })
+                
+            for marker in page.get("DeleteMarkers", []):
+                objects_to_delete.append({
+                    "Key": marker["Key"],
+                    "VersionId": marker["VersionId"]
+                })
+                
+            if objects_to_delete:
+                s3_client.delete_objects(
+                    Bucket=bucket_name,
+                    Delete={"Objects": objects_to_delete, "Quiet": True}
+                )
+    except ClientError as exc:
+        logger.error("Error deleting object versions from S3 bucket %s: %s", bucket_name, exc)
+        
+    try:
+        paginator = s3_client.get_paginator("list_multipart_uploads")
+        for page in paginator.paginate(Bucket=bucket_name):
+            for upload in page.get("Uploads", []):
+                s3_client.abort_multipart_upload(
+                    Bucket=bucket_name,
+                    Key=upload["Key"],
+                    UploadId=upload["UploadId"]
+                )
+    except ClientError as exc:
+        logger.error("Error aborting multipart uploads for S3 bucket %s: %s", bucket_name, exc)
+
+
+def delete_iam_role(role_name: str) -> None:
+    """Detach policies, delete inline policies, remove from instance profiles, and delete the role."""
+    current_role = get_current_role_name()
+    if role_name == current_role:
+        logger.warning("Bypassing self-destruction of execution role: %s", role_name)
+        return
+
+    # 1. Detach managed policies
+    try:
+        paginator = iam_client.get_paginator("list_attached_role_policies")
+        for page in paginator.paginate(RoleName=role_name):
+            for policy in page.get("AttachedPolicies", []):
+                policy_arn = policy["PolicyArn"]
+                logger.info("Detaching policy %s from role %s", policy_arn, role_name)
+                iam_client.detach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
+    except ClientError as exc:
+        logger.error("Error detaching policies from role %s: %s", role_name, exc)
+
+    # 2. Delete inline policies
+    try:
+        paginator = iam_client.get_paginator("list_role_policies")
+        for page in paginator.paginate(RoleName=role_name):
+            for policy_name in page.get("PolicyNames", []):
+                logger.info("Deleting inline policy %s from role %s", policy_name, role_name)
+                iam_client.delete_role_policy(RoleName=role_name, PolicyName=policy_name)
+    except ClientError as exc:
+        logger.error("Error deleting inline policies from role %s: %s", role_name, exc)
+
+    # 3. Remove from instance profiles
+    try:
+        response = iam_client.list_instance_profiles_for_role(RoleName=role_name)
+        for profile in response.get("InstanceProfiles", []):
+            profile_name = profile["InstanceProfileName"]
+            logger.info("Removing role %s from instance profile %s", role_name, profile_name)
+            iam_client.remove_role_from_instance_profile(InstanceProfileName=profile_name, RoleName=role_name)
+    except ClientError as exc:
+        logger.error("Error removing role %s from instance profiles: %s", role_name, exc)
+
+    # 4. Delete the role
+    logger.info("Deleting IAM role: %s", role_name)
+    iam_client.delete_role(RoleName=role_name)
+
+
+def delete_iam_user(user_name: str) -> None:
+    """Strip all policies, login profiles, access keys, certificates, SSH keys, MFA, and delete the user."""
+    # 1. Detach managed policies
+    try:
+        paginator = iam_client.get_paginator("list_attached_user_policies")
+        for page in paginator.paginate(UserName=user_name):
+            for policy in page.get("AttachedPolicies", []):
+                policy_arn = policy["PolicyArn"]
+                logger.info("Detaching policy %s from user %s", policy_arn, user_name)
+                iam_client.detach_user_policy(UserName=user_name, PolicyArn=policy_arn)
+    except ClientError as exc:
+        logger.error("Error detaching policies from user %s: %s", user_name, exc)
+
+    # 2. Delete inline policies
+    try:
+        paginator = iam_client.get_paginator("list_user_policies")
+        for page in paginator.paginate(UserName=user_name):
+            for policy_name in page.get("PolicyNames", []):
+                logger.info("Deleting inline policy %s from user %s", policy_name, user_name)
+                iam_client.delete_user_policy(UserName=user_name, PolicyName=policy_name)
+    except ClientError as exc:
+        logger.error("Error deleting inline policies from user %s: %s", user_name, exc)
+
+    # 3. Delete access keys
+    try:
+        paginator = iam_client.get_paginator("list_access_keys")
+        for page in paginator.paginate(UserName=user_name):
+            for key in page.get("AccessKeyMetadata", []):
+                key_id = key["AccessKeyId"]
+                logger.info("Deleting access key %s for user %s", key_id, user_name)
+                iam_client.delete_access_key(UserName=user_name, AccessKeyId=key_id)
+    except ClientError as exc:
+        logger.error("Error deleting access keys for user %s: %s", user_name, exc)
+
+    # 4. Delete login profile
+    try:
+        iam_client.delete_login_profile(UserName=user_name)
+        logger.info("Deleted login profile for user %s", user_name)
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "NoSuchEntity":
+            logger.error("Error deleting login profile for user %s: %s", user_name, exc)
+
+    # 5. Delete signing certificates
+    try:
+        response = iam_client.list_signing_certificates(UserName=user_name)
+        for cert in response.get("Certificates", []):
+            cert_id = cert["CertificateId"]
+            logger.info("Deleting signing certificate %s for user %s", cert_id, user_name)
+            iam_client.delete_signing_certificate(UserName=user_name, CertificateId=cert_id)
+    except ClientError as exc:
+        logger.error("Error deleting signing certificates for user %s: %s", user_name, exc)
+
+    # 6. Delete SSH public keys
+    try:
+        response = iam_client.list_ssh_public_keys(UserName=user_name)
+        for key in response.get("SSHPublicKeys", []):
+            key_id = key["SSHPublicKeyId"]
+            logger.info("Deleting SSH public key %s for user %s", key_id, user_name)
+            iam_client.delete_ssh_public_key(UserName=user_name, SSHPublicKeyId=key_id)
+    except ClientError as exc:
+        logger.error("Error deleting SSH public keys for user %s: %s", user_name, exc)
+
+    # 7. Delete service-specific credentials
+    try:
+        response = iam_client.list_service_specific_credentials(UserName=user_name)
+        for cred in response.get("ServiceSpecificCredentials", []):
+            cred_id = cred["ServiceSpecificCredentialId"]
+            logger.info("Deleting service-specific credential %s for user %s", cred_id, user_name)
+            iam_client.delete_service_specific_credentials(UserName=user_name, ServiceSpecificCredentialId=cred_id)
+    except ClientError as exc:
+        logger.error("Error deleting service-specific credentials for user %s: %s", user_name, exc)
+
+    # 8. Deactivate and delete MFA devices
+    try:
+        response = iam_client.list_mfa_devices(UserName=user_name)
+        for mfa in response.get("MFADevices", []):
+            serial = mfa["SerialNumber"]
+            logger.info("Deactivating MFA device %s for user %s", serial, user_name)
+            iam_client.deactivate_mfa_device(UserName=user_name, SerialNumber=serial)
+            if serial.startswith("arn:aws:iam::"):
+                try:
+                    iam_client.delete_virtual_mfa_device(SerialNumber=serial)
+                    logger.info("Deleted virtual MFA device %s", serial)
+                except ClientError as mfa_exc:
+                    logger.error("Error deleting virtual MFA device %s: %s", serial, mfa_exc)
+    except ClientError as exc:
+        logger.error("Error handling MFA devices for user %s: %s", user_name, exc)
+
+    # 9. Delete user
+    logger.info("Deleting IAM user: %s", user_name)
+    iam_client.delete_user(UserName=user_name)
+
+
+def delete_vpc_resources(vpc_id: str, immunity_ids: Set[str]) -> None:
+    """Tear down all dependent VPC resources sequentially before deleting the VPC itself."""
+    logger.info("Tearing down resources in VPC: %s", vpc_id)
+
+    # 1. VPC Endpoints
+    try:
+        endpoints_resp = ec2_client.describe_vpc_endpoints(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
+        for ep in endpoints_resp.get("VpcEndpoints", []):
+            ep_id = ep["VpcEndpointId"]
+            if ep_id not in immunity_ids:
+                logger.info("Deleting VPC Endpoint: %s", ep_id)
+                ec2_client.delete_vpc_endpoints(VpcEndpointIds=[ep_id])
+    except Exception as exc:
+        logger.error("Failed to delete VPC Endpoints in VPC %s: %s", vpc_id, exc)
+
+    # 2. VPC Peering Connections
+    try:
+        peerings_resp = ec2_client.describe_vpc_peering_connections()
+        for pc in peerings_resp.get("VpcPeeringConnections", []):
+            pc_id = pc["VpcPeeringConnectionId"]
+            req_vpc = pc.get("RequesterVpcInfo", {}).get("VpcId")
+            acp_vpc = pc.get("AccepterVpcInfo", {}).get("VpcId")
+            if (req_vpc == vpc_id or acp_vpc == vpc_id) and pc_id not in immunity_ids:
+                logger.info("Deleting VPC Peering Connection: %s", pc_id)
+                ec2_client.delete_vpc_peering_connection(VpcPeeringConnectionId=pc_id)
+    except Exception as exc:
+        logger.error("Failed to delete VPC Peering Connections in VPC %s: %s", vpc_id, exc)
+
+    # 3. Network Interfaces (ENIs)
+    try:
+        enis_resp = ec2_client.describe_network_interfaces(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
+        for eni in enis_resp.get("NetworkInterfaces", []):
+            eni_id = eni["NetworkInterfaceId"]
+            if eni_id not in immunity_ids:
+                attachment = eni.get("Attachment", {})
+                if attachment:
+                    attachment_id = attachment.get("AttachmentId")
+                    logger.info("Detaching ENI %s", eni_id)
+                    try:
+                        ec2_client.detach_network_interface(AttachmentId=attachment_id, Force=True)
+                    except Exception as det_exc:
+                        logger.warning("Failed to detach ENI %s: %s", eni_id, det_exc)
+                logger.info("Deleting ENI: %s", eni_id)
+                try:
+                    ec2_client.delete_network_interface(NetworkInterfaceId=eni_id)
+                except Exception as del_exc:
+                    logger.warning("Failed to delete ENI %s: %s (will retry or ignore)", eni_id, del_exc)
+    except Exception as exc:
+        logger.error("Failed to handle ENIs in VPC %s: %s", vpc_id, exc)
+
+    # 4. Internet Gateways
+    try:
+        igws_resp = ec2_client.describe_internet_gateways(Filters=[{"Name": "attachment.vpc-id", "Values": [vpc_id]}])
+        for igw in igws_resp.get("InternetGateways", []):
+            igw_id = igw["InternetGatewayId"]
+            if igw_id not in immunity_ids:
+                logger.info("Detaching Internet Gateway %s from VPC %s", igw_id, vpc_id)
+                try:
+                    ec2_client.detach_internet_gateway(InternetGatewayId=igw_id, VpcId=vpc_id)
+                except Exception as det_exc:
+                    logger.warning("Failed to detach IGW %s: %s", igw_id, det_exc)
+                logger.info("Deleting Internet Gateway: %s", igw_id)
+                try:
+                    ec2_client.delete_internet_gateway(InternetGatewayId=igw_id)
+                except Exception as del_exc:
+                    logger.warning("Failed to delete IGW %s: %s", igw_id, del_exc)
+    except Exception as exc:
+        logger.error("Failed to handle Internet Gateways in VPC %s: %s", vpc_id, exc)
+
+    # 5. Route Tables
+    try:
+        rts_resp = ec2_client.describe_route_tables(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
+        for rt in rts_resp.get("RouteTables", []):
+            rt_id = rt["RouteTableId"]
+            is_main = any(assoc.get("Main", False) for assoc in rt.get("Associations", []))
+            if is_main:
+                continue
+            if rt_id not in immunity_ids:
+                for assoc in rt.get("Associations", []):
+                    assoc_id = assoc.get("RouteTableAssociationId")
+                    if assoc_id:
+                        logger.info("Disassociating route table association %s", assoc_id)
+                        try:
+                            ec2_client.disassociate_route_table(AssociationId=assoc_id)
+                        except Exception as dis_exc:
+                            logger.warning("Failed to disassociate route table %s: %s", rt_id, dis_exc)
+                logger.info("Deleting Route Table: %s", rt_id)
+                try:
+                    ec2_client.delete_route_table(RouteTableId=rt_id)
+                except Exception as del_exc:
+                    logger.warning("Failed to delete Route Table %s: %s", rt_id, del_exc)
+    except Exception as exc:
+        logger.error("Failed to handle Route Tables in VPC %s: %s", vpc_id, exc)
+
+    # 6. Security Groups
+    try:
+        sgs_resp = ec2_client.describe_security_groups(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
+        # First revoke rules to break circular dependencies
+        for sg in sgs_resp.get("SecurityGroups", []):
+            sg_id = sg["GroupId"]
+            if sg.get("GroupName") == "default":
+                continue
+            if sg_id not in immunity_ids:
+                if sg.get("IpPermissions"):
+                    try:
+                        ec2_client.revoke_security_group_ingress(GroupId=sg_id, IpPermissions=sg["IpPermissions"])
+                    except Exception as rev_exc:
+                        logger.warning("Failed to revoke ingress rules for SG %s: %s", sg_id, rev_exc)
+                if sg.get("IpPermissionsEgress"):
+                    try:
+                        ec2_client.revoke_security_group_egress(GroupId=sg_id, IpPermissions=sg["IpPermissionsEgress"])
+                    except Exception as rev_exc:
+                        logger.warning("Failed to revoke egress rules for SG %s: %s", sg_id, rev_exc)
+
+        # Then delete security groups
+        for sg in sgs_resp.get("SecurityGroups", []):
+            sg_id = sg["GroupId"]
+            if sg.get("GroupName") == "default":
+                continue
+            if sg_id not in immunity_ids:
+                logger.info("Deleting Security Group: %s", sg_id)
+                try:
+                    ec2_client.delete_security_group(GroupId=sg_id)
+                except Exception as del_exc:
+                    logger.warning("Failed to delete Security Group %s: %s", sg_id, del_exc)
+    except Exception as exc:
+        logger.error("Failed to handle Security Groups in VPC %s: %s", vpc_id, exc)
+
+    # 7. Subnets
+    try:
+        subnets_resp = ec2_client.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
+        for subnet in subnets_resp.get("Subnets", []):
+            subnet_id = subnet["SubnetId"]
+            if subnet_id not in immunity_ids:
+                logger.info("Deleting Subnet: %s", subnet_id)
+                try:
+                    ec2_client.delete_subnet(SubnetId=subnet_id)
+                except Exception as del_exc:
+                    logger.warning("Failed to delete Subnet %s: %s", subnet_id, del_exc)
+    except Exception as exc:
+        logger.error("Failed to handle Subnets in VPC %s: %s", vpc_id, exc)
+
+    # 8. Finally, delete VPC
+    logger.info("Deleting VPC: %s", vpc_id)
+    try:
+        ec2_client.delete_vpc(VpcId=vpc_id)
+    except Exception as exc:
+        logger.error("Failed to delete VPC %s: %s", vpc_id, exc)
+
+
+def evaluate_purge_plan(
+    resource_plan: Dict[str, List[Dict[str, Any]]],
+    dry_run: bool,
+    context: Any = None,
+    immunity_ids: Set[str] = None
+) -> Dict[str, Any]:
     """Build the final purge plan and execute deletion if dry-run is disabled."""
+    if immunity_ids is None:
+        immunity_ids = set()
+
     result = {
         "dry_run": dry_run,
         "summary": {k: len(v) for k, v in resource_plan.items()},
@@ -304,87 +844,14 @@ def evaluate_purge_plan(resource_plan: Dict[str, List[Dict[str, Any]]], dry_run:
         "message": "Dry-run enabled. No resources were deleted."
     }
 
+    purge_data_stores = os.environ.get("PURGE_DATA_STORES", "true").lower() == "true"
+    purge_storage_buckets = os.environ.get("PURGE_STORAGE_BUCKETS", "true").lower() == "true"
+    purge_custom_iam = os.environ.get("PURGE_CUSTOM_IAM", "true").lower() == "true"
+
     if not dry_run:
         logger.info("Dry-run is disabled. Executing resource purge...")
 
-        # 1. EC2 Instances
-        for instance in resource_plan.get("ec2_instances", []):
-            instance_id = instance["id"]
-            try:
-                logger.info("Terminating EC2 instance: %s", instance_id)
-                ec2_client.terminate_instances(InstanceIds=[instance_id])
-                result["deleted"]["ec2_instances"].append(instance_id)
-            except Exception as exc:
-                logger.error("Failed to terminate EC2 instance %s: %s", instance_id, exc)
-                result["failures"]["ec2_instances"].append({"id": instance_id, "error": str(exc)})
-
-        # 2. NAT Gateways
-        for gateway in resource_plan.get("nat_gateways", []):
-            gw_id = gateway["id"]
-            try:
-                logger.info("Deleting NAT Gateway: %s", gw_id)
-                ec2_client.delete_nat_gateway(NatGatewayId=gw_id)
-                result["deleted"]["nat_gateways"].append(gw_id)
-            except Exception as exc:
-                logger.error("Failed to delete NAT Gateway %s: %s", gw_id, exc)
-                result["failures"]["nat_gateways"].append({"id": gw_id, "error": str(exc)})
-
-        # 3. EBS Volumes
-        for volume in resource_plan.get("ebs_volumes", []):
-            vol_id = volume["id"]
-            try:
-                logger.info("Deleting EBS volume: %s", vol_id)
-                ec2_client.delete_volume(VolumeId=vol_id)
-                result["deleted"]["ebs_volumes"].append(vol_id)
-            except Exception as exc:
-                logger.error("Failed to delete EBS volume %s: %s", vol_id, exc)
-                result["failures"]["ebs_volumes"].append({"id": vol_id, "error": str(exc)})
-
-        # 4. RDS Instances
-        for db in resource_plan.get("rds_instances", []):
-            db_id = db["id"]
-            try:
-                logger.info("Deleting RDS DB instance: %s", db_id)
-                rds_client.delete_db_instance(DBInstanceIdentifier=db_id, SkipFinalSnapshot=True)
-                result["deleted"]["rds_instances"].append(db_id)
-            except Exception as exc:
-                logger.error("Failed to delete RDS instance %s: %s", db_id, exc)
-                result["failures"]["rds_instances"].append({"id": db_id, "error": str(exc)})
-
-        # 5. Load Balancers
-        for lb in resource_plan.get("load_balancers", []):
-            lb_arn = lb["arn"]
-            try:
-                logger.info("Deleting Load Balancer: %s", lb_arn)
-                elb_client.delete_load_balancer(LoadBalancerArn=lb_arn)
-                result["deleted"]["load_balancers"].append(lb_arn)
-            except Exception as exc:
-                logger.error("Failed to delete Load Balancer %s: %s", lb_arn, exc)
-                result["failures"]["load_balancers"].append({"arn": lb_arn, "error": str(exc)})
-
-        # 6. Security Groups
-        for sg in resource_plan.get("security_groups", []):
-            sg_id = sg["id"]
-            try:
-                logger.info("Deleting Security Group: %s", sg_id)
-                ec2_client.delete_security_group(GroupId=sg_id)
-                result["deleted"]["security_groups"].append(sg_id)
-            except Exception as exc:
-                logger.error("Failed to delete Security Group %s: %s", sg_id, exc)
-                result["failures"]["security_groups"].append({"id": sg_id, "error": str(exc)})
-
-        # 7. Auto Scaling Groups
-        for asg in resource_plan.get("auto_scaling_groups", []):
-            asg_name = asg["id"]
-            try:
-                logger.info("Deleting Auto Scaling Group: %s", asg_name)
-                autoscaling_client.delete_auto_scaling_group(AutoScalingGroupName=asg_name, ForceDelete=True)
-                result["deleted"]["auto_scaling_groups"].append(asg_name)
-            except Exception as exc:
-                logger.error("Failed to delete Auto Scaling Group %s: %s", asg_name, exc)
-                result["failures"]["auto_scaling_groups"].append({"id": asg_name, "error": str(exc)})
-
-        # 8. ECS Clusters
+        # 1. ECS Clusters
         for cluster in resource_plan.get("ecs_clusters", []):
             cluster_name = cluster["id"]
             try:
@@ -395,8 +862,167 @@ def evaluate_purge_plan(resource_plan: Dict[str, List[Dict[str, Any]]], dry_run:
                 logger.error("Failed to delete ECS Cluster %s: %s", cluster_name, exc)
                 result["failures"]["ecs_clusters"].append({"id": cluster_name, "error": str(exc)})
 
+        # 2. Auto Scaling Groups
+        for asg in resource_plan.get("auto_scaling_groups", []):
+            asg_name = asg["id"]
+            try:
+                logger.info("Deleting Auto Scaling Group: %s", asg_name)
+                autoscaling_client.delete_auto_scaling_group(AutoScalingGroupName=asg_name, ForceDelete=True)
+                result["deleted"]["auto_scaling_groups"].append(asg_name)
+            except Exception as exc:
+                logger.error("Failed to delete Auto Scaling Group %s: %s", asg_name, exc)
+                result["failures"]["auto_scaling_groups"].append({"id": asg_name, "error": str(exc)})
+
+        # 3. EC2 Instances
+        for instance in resource_plan.get("ec2_instances", []):
+            instance_id = instance["id"]
+            try:
+                logger.info("Terminating EC2 instance: %s", instance_id)
+                ec2_client.terminate_instances(InstanceIds=[instance_id])
+                result["deleted"]["ec2_instances"].append(instance_id)
+            except Exception as exc:
+                logger.error("Failed to terminate EC2 instance %s: %s", instance_id, exc)
+                result["failures"]["ec2_instances"].append({"id": instance_id, "error": str(exc)})
+
+        # 4. RDS Instances
+        if purge_data_stores:
+            for db in resource_plan.get("rds_instances", []):
+                db_id = db["id"]
+                try:
+                    logger.info("Deleting RDS DB instance: %s", db_id)
+                    rds_client.delete_db_instance(DBInstanceIdentifier=db_id, SkipFinalSnapshot=True)
+                    result["deleted"]["rds_instances"].append(db_id)
+                except Exception as exc:
+                    logger.error("Failed to delete RDS instance %s: %s", db_id, exc)
+                    result["failures"]["rds_instances"].append({"id": db_id, "error": str(exc)})
+
+        # 5. ElastiCache Clusters
+        if purge_data_stores:
+            for ec in resource_plan.get("elasticache_clusters", []):
+                ec_id = ec["id"]
+                try:
+                    if ec.get("is_replication_group"):
+                        logger.info("Deleting ElastiCache Replication Group: %s", ec_id)
+                        elasticache_client.delete_replication_group(ReplicationGroupId=ec_id, RetainPrimaryCluster=False)
+                    else:
+                        logger.info("Deleting ElastiCache Cache Cluster: %s", ec_id)
+                        elasticache_client.delete_cache_cluster(CacheClusterId=ec_id)
+                    result["deleted"]["elasticache_clusters"].append(ec_id)
+                except Exception as exc:
+                    logger.error("Failed to delete ElastiCache resource %s: %s", ec_id, exc)
+                    result["failures"]["elasticache_clusters"].append({"id": ec_id, "error": str(exc)})
+
+        # 6. AMP Workspaces
+        if purge_data_stores:
+            for ws in resource_plan.get("prometheus_workspaces", []):
+                ws_id = ws["id"]
+                try:
+                    logger.info("Deleting AMP Workspace: %s", ws_id)
+                    amp_client.delete_workspace(workspaceId=ws_id)
+                    result["deleted"]["prometheus_workspaces"].append(ws_id)
+                except Exception as exc:
+                    logger.error("Failed to delete AMP workspace %s: %s", ws_id, exc)
+                    result["failures"]["prometheus_workspaces"].append({"id": ws_id, "error": str(exc)})
+
+        # 7. Load Balancers
+        for lb in resource_plan.get("load_balancers", []):
+            lb_arn = lb["arn"]
+            try:
+                logger.info("Deleting Load Balancer: %s", lb_arn)
+                elb_client.delete_load_balancer(LoadBalancerArn=lb_arn)
+                result["deleted"]["load_balancers"].append(lb_arn)
+            except Exception as exc:
+                logger.error("Failed to delete Load Balancer %s: %s", lb_arn, exc)
+                result["failures"]["load_balancers"].append({"arn": lb_arn, "error": str(exc)})
+
+        # 8. NAT Gateways
+        for gateway in resource_plan.get("nat_gateways", []):
+            gw_id = gateway["id"]
+            try:
+                logger.info("Deleting NAT Gateway: %s", gw_id)
+                ec2_client.delete_nat_gateway(NatGatewayId=gw_id)
+                result["deleted"]["nat_gateways"].append(gw_id)
+            except Exception as exc:
+                logger.error("Failed to delete NAT Gateway %s: %s", gw_id, exc)
+                result["failures"]["nat_gateways"].append({"id": gw_id, "error": str(exc)})
+
+        # 9. EBS Volumes
+        for volume in resource_plan.get("ebs_volumes", []):
+            vol_id = volume["id"]
+            try:
+                logger.info("Deleting EBS volume: %s", vol_id)
+                ec2_client.delete_volume(VolumeId=vol_id)
+                result["deleted"]["ebs_volumes"].append(vol_id)
+            except Exception as exc:
+                logger.error("Failed to delete EBS volume %s: %s", vol_id, exc)
+                result["failures"]["ebs_volumes"].append({"id": vol_id, "error": str(exc)})
+
+        # 10. S3 Buckets
+        if purge_storage_buckets:
+            for bucket in resource_plan.get("s3_buckets", []):
+                bucket_name = bucket["id"]
+                if bucket_name == os.environ.get("STATE_BUCKET_NAME"):
+                    logger.warning("Bypassing self-destruction of state bucket: %s", bucket_name)
+                    continue
+                try:
+                    logger.info("Emptying S3 bucket: %s", bucket_name)
+                    delete_s3_bucket_contents(bucket_name)
+                    logger.info("Deleting S3 bucket: %s", bucket_name)
+                    s3_client.delete_bucket(Bucket=bucket_name)
+                    result["deleted"]["s3_buckets"].append(bucket_name)
+                except Exception as exc:
+                    logger.error("Failed to delete S3 bucket %s: %s", bucket_name, exc)
+                    result["failures"]["s3_buckets"].append({"id": bucket_name, "error": str(exc)})
+
+        # 11. IAM Users
+        if purge_custom_iam:
+            for user in resource_plan.get("iam_users", []):
+                user_name = user["id"]
+                try:
+                    logger.info("Deleting IAM User: %s", user_name)
+                    delete_iam_user(user_name)
+                    result["deleted"]["iam_users"].append(user_name)
+                except Exception as exc:
+                    logger.error("Failed to delete IAM User %s: %s", user_name, exc)
+                    result["failures"]["iam_users"].append({"id": user_name, "error": str(exc)})
+
+        # 12. IAM Roles
+        if purge_custom_iam:
+            for role in resource_plan.get("iam_roles", []):
+                role_name = role["id"]
+                try:
+                    logger.info("Deleting IAM Role: %s", role_name)
+                    delete_iam_role(role_name)
+                    result["deleted"]["iam_roles"].append(role_name)
+                except Exception as exc:
+                    logger.error("Failed to delete IAM Role %s: %s", role_name, exc)
+                    result["failures"]["iam_roles"].append({"id": role_name, "error": str(exc)})
+
+        # 13. VPCs
+        for vpc in resource_plan.get("vpcs", []):
+            vpc_id = vpc["id"]
+            try:
+                logger.info("Deleting VPC: %s", vpc_id)
+                delete_vpc_resources(vpc_id, immunity_ids)
+                result["deleted"]["vpcs"].append(vpc_id)
+            except Exception as exc:
+                logger.error("Failed to delete VPC %s: %s", vpc_id, exc)
+                result["failures"]["vpcs"].append({"id": vpc_id, "error": str(exc)})
+
+        # 14. Security Groups (remaining non-default)
+        for sg in resource_plan.get("security_groups", []):
+            sg_id = sg["id"]
+            try:
+                logger.info("Deleting Security Group: %s", sg_id)
+                ec2_client.delete_security_group(GroupId=sg_id)
+                result["deleted"]["security_groups"].append(sg_id)
+            except Exception as exc:
+                logger.error("Failed to delete Security Group %s: %s", sg_id, exc)
+                result["failures"]["security_groups"].append({"id": sg_id, "error": str(exc)})
+
         total_success = sum(len(v) for v in result["deleted"].values())
         total_fail = sum(len(v) for v in result["failures"].values())
         result["message"] = f"Purge executed: {total_success} resources successfully deleted, {total_fail} failures."
 
     return result
+

@@ -83,3 +83,5 @@ Thumbs.db
 # Ignore local testing logs or dry-run outputs
 heliopause_debug.log
 .solstice_cache/
+response.json
+*.zip

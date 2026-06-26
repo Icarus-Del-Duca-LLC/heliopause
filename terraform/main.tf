@@ -237,14 +237,25 @@ resource "aws_lambda_function" "heliopause" {
 
   environment {
     variables = {
-      STATE_BUCKET_NAME     = aws_s3_bucket.state_bucket.id
-      STATE_PREFIX          = var.state_prefix
-      CORE_STATE_FILE       = var.core_state_file
-      DRY_RUN               = tostring(var.dry_run)
-      SNS_TOPIC_ARN         = aws_sns_topic.notifications.arn
-      PURGE_DATA_STORES     = tostring(var.purge_data_stores)
-      PURGE_STORAGE_BUCKETS = tostring(var.purge_storage_buckets)
-      PURGE_CUSTOM_IAM      = tostring(var.purge_custom_iam)
+      STATE_BUCKET_NAME           = aws_s3_bucket.state_bucket.id
+      STATE_PREFIX                = var.state_prefix
+      CORE_STATE_FILE             = var.core_state_file
+      DRY_RUN                     = tostring(var.dry_run)
+      SNS_TOPIC_ARN               = aws_sns_topic.notifications.arn
+      PURGE_EC2_INSTANCES         = tostring(var.purge_ec2_instances)
+      PURGE_NAT_GATEWAYS          = tostring(var.purge_nat_gateways)
+      PURGE_EBS_VOLUMES           = tostring(var.purge_ebs_volumes)
+      PURGE_RDS_INSTANCES         = tostring(var.purge_rds_instances)
+      PURGE_LOAD_BALANCERS        = tostring(var.purge_load_balancers)
+      PURGE_SECURITY_GROUPS       = tostring(var.purge_security_groups)
+      PURGE_AUTO_SCALING_GROUPS   = tostring(var.purge_auto_scaling_groups)
+      PURGE_ECS_CLUSTERS          = tostring(var.purge_ecs_clusters)
+      PURGE_ELASTICACHE_CLUSTERS  = tostring(var.purge_elasticache_clusters)
+      PURGE_PROMETHEUS_WORKSPACES = tostring(var.purge_prometheus_workspaces)
+      PURGE_S3_BUCKETS            = tostring(var.purge_s3_buckets)
+      PURGE_IAM_ROLES             = tostring(var.purge_iam_roles)
+      PURGE_IAM_USERS             = tostring(var.purge_iam_users)
+      PURGE_VPCS                  = tostring(var.purge_vpcs)
     }
   }
 }

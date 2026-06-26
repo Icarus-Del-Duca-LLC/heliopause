@@ -46,9 +46,20 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     sns_topic_arn = os.environ.get("SNS_TOPIC_ARN")
 
     # Feature toggles
-    purge_data_stores = os.environ.get("PURGE_DATA_STORES", "true").lower() == "true"
-    purge_storage_buckets = os.environ.get("PURGE_STORAGE_BUCKETS", "true").lower() == "true"
-    purge_custom_iam = os.environ.get("PURGE_CUSTOM_IAM", "true").lower() == "true"
+    purge_ec2_instances = os.environ.get("PURGE_EC2_INSTANCES", "true").lower() == "true"
+    purge_nat_gateways = os.environ.get("PURGE_NAT_GATEWAYS", "true").lower() == "true"
+    purge_ebs_volumes = os.environ.get("PURGE_EBS_VOLUMES", "true").lower() == "true"
+    purge_rds_instances = os.environ.get("PURGE_RDS_INSTANCES", "true").lower() == "true"
+    purge_load_balancers = os.environ.get("PURGE_LOAD_BALANCERS", "true").lower() == "true"
+    purge_security_groups = os.environ.get("PURGE_SECURITY_GROUPS", "true").lower() == "true"
+    purge_auto_scaling_groups = os.environ.get("PURGE_AUTO_SCALING_GROUPS", "true").lower() == "true"
+    purge_ecs_clusters = os.environ.get("PURGE_ECS_CLUSTERS", "true").lower() == "true"
+    purge_elasticache_clusters = os.environ.get("PURGE_ELASTICACHE_CLUSTERS", "true").lower() == "true"
+    purge_prometheus_workspaces = os.environ.get("PURGE_PROMETHEUS_WORKSPACES", "true").lower() == "true"
+    purge_s3_buckets = os.environ.get("PURGE_S3_BUCKETS", "false").lower() == "true"
+    purge_iam_roles = os.environ.get("PURGE_IAM_ROLES", "false").lower() == "true"
+    purge_iam_users = os.environ.get("PURGE_IAM_USERS", "true").lower() == "true"
+    purge_vpcs = os.environ.get("PURGE_VPCS", "false").lower() == "true"
 
     logger.info("Heliopause starting: dry_run=%s, bucket=%s, prefix=%s, core_file=%s", dry_run, state_bucket, state_prefix, core_state_file)
 
@@ -72,9 +83,20 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     resource_plan = scan_for_purge_candidates(
         immunity_ids,
-        purge_data_stores=purge_data_stores,
-        purge_storage_buckets=purge_storage_buckets,
-        purge_custom_iam=purge_custom_iam
+        purge_ec2_instances=purge_ec2_instances,
+        purge_nat_gateways=purge_nat_gateways,
+        purge_ebs_volumes=purge_ebs_volumes,
+        purge_rds_instances=purge_rds_instances,
+        purge_load_balancers=purge_load_balancers,
+        purge_security_groups=purge_security_groups,
+        purge_auto_scaling_groups=purge_auto_scaling_groups,
+        purge_ecs_clusters=purge_ecs_clusters,
+        purge_elasticache_clusters=purge_elasticache_clusters,
+        purge_prometheus_workspaces=purge_prometheus_workspaces,
+        purge_s3_buckets=purge_s3_buckets,
+        purge_iam_roles=purge_iam_roles,
+        purge_iam_users=purge_iam_users,
+        purge_vpcs=purge_vpcs
     )
     result = evaluate_purge_plan(resource_plan, dry_run, context=context, immunity_ids=immunity_ids)
 
@@ -163,9 +185,20 @@ def extract_resource_ids(state_data: Dict[str, Any]) -> Set[str]:
 
 def scan_for_purge_candidates(
     immunity_ids: Set[str],
-    purge_data_stores: bool,
-    purge_storage_buckets: bool,
-    purge_custom_iam: bool
+    purge_ec2_instances: bool,
+    purge_nat_gateways: bool,
+    purge_ebs_volumes: bool,
+    purge_rds_instances: bool,
+    purge_load_balancers: bool,
+    purge_security_groups: bool,
+    purge_auto_scaling_groups: bool,
+    purge_ecs_clusters: bool,
+    purge_elasticache_clusters: bool,
+    purge_prometheus_workspaces: bool,
+    purge_s3_buckets: bool,
+    purge_iam_roles: bool,
+    purge_iam_users: bool,
+    purge_vpcs: bool
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Scan AWS resources and identify candidates not present in the immunity list."""
     candidates: Dict[str, List[Dict[str, Any]]] = {
@@ -185,30 +218,34 @@ def scan_for_purge_candidates(
         "vpcs": [],
     }
 
-    # Core networking/compute (always scanned)
-    candidates["ec2_instances"] = scan_ec2_instances(immunity_ids)
-    candidates["nat_gateways"] = scan_nat_gateways(immunity_ids)
-    candidates["ebs_volumes"] = scan_ebs_volumes(immunity_ids)
-    candidates["load_balancers"] = scan_load_balancers(immunity_ids)
-    candidates["security_groups"] = scan_security_groups(immunity_ids)
-    candidates["auto_scaling_groups"] = scan_auto_scaling_groups(immunity_ids)
-    candidates["ecs_clusters"] = scan_ecs_clusters(immunity_ids)
-    candidates["vpcs"] = scan_vpcs(immunity_ids)
-
-    # Data stores (toggled)
-    if purge_data_stores:
+    if purge_ec2_instances:
+        candidates["ec2_instances"] = scan_ec2_instances(immunity_ids)
+    if purge_nat_gateways:
+        candidates["nat_gateways"] = scan_nat_gateways(immunity_ids)
+    if purge_ebs_volumes:
+        candidates["ebs_volumes"] = scan_ebs_volumes(immunity_ids)
+    if purge_rds_instances:
         candidates["rds_instances"] = scan_rds_instances(immunity_ids)
+    if purge_load_balancers:
+        candidates["load_balancers"] = scan_load_balancers(immunity_ids)
+    if purge_security_groups:
+        candidates["security_groups"] = scan_security_groups(immunity_ids)
+    if purge_auto_scaling_groups:
+        candidates["auto_scaling_groups"] = scan_auto_scaling_groups(immunity_ids)
+    if purge_ecs_clusters:
+        candidates["ecs_clusters"] = scan_ecs_clusters(immunity_ids)
+    if purge_elasticache_clusters:
         candidates["elasticache_clusters"] = scan_elasticache_clusters(immunity_ids)
+    if purge_prometheus_workspaces:
         candidates["prometheus_workspaces"] = scan_prometheus_workspaces(immunity_ids)
-
-    # S3 Buckets (toggled)
-    if purge_storage_buckets:
+    if purge_s3_buckets:
         candidates["s3_buckets"] = scan_s3_buckets(immunity_ids)
-
-    # IAM resources (toggled)
-    if purge_custom_iam:
+    if purge_iam_roles:
         candidates["iam_roles"] = scan_iam_roles(immunity_ids)
+    if purge_iam_users:
         candidates["iam_users"] = scan_iam_users(immunity_ids)
+    if purge_vpcs:
+        candidates["vpcs"] = scan_vpcs(immunity_ids)
 
     return candidates
 
@@ -844,48 +881,62 @@ def evaluate_purge_plan(
         "message": "Dry-run enabled. No resources were deleted."
     }
 
-    purge_data_stores = os.environ.get("PURGE_DATA_STORES", "true").lower() == "true"
-    purge_storage_buckets = os.environ.get("PURGE_STORAGE_BUCKETS", "true").lower() == "true"
-    purge_custom_iam = os.environ.get("PURGE_CUSTOM_IAM", "true").lower() == "true"
+    purge_ec2_instances = os.environ.get("PURGE_EC2_INSTANCES", "true").lower() == "true"
+    purge_nat_gateways = os.environ.get("PURGE_NAT_GATEWAYS", "true").lower() == "true"
+    purge_ebs_volumes = os.environ.get("PURGE_EBS_VOLUMES", "true").lower() == "true"
+    purge_rds_instances = os.environ.get("PURGE_RDS_INSTANCES", "true").lower() == "true"
+    purge_load_balancers = os.environ.get("PURGE_LOAD_BALANCERS", "true").lower() == "true"
+    purge_security_groups = os.environ.get("PURGE_SECURITY_GROUPS", "true").lower() == "true"
+    purge_auto_scaling_groups = os.environ.get("PURGE_AUTO_SCALING_GROUPS", "true").lower() == "true"
+    purge_ecs_clusters = os.environ.get("PURGE_ECS_CLUSTERS", "true").lower() == "true"
+    purge_elasticache_clusters = os.environ.get("PURGE_ELASTICACHE_CLUSTERS", "true").lower() == "true"
+    purge_prometheus_workspaces = os.environ.get("PURGE_PROMETHEUS_WORKSPACES", "true").lower() == "true"
+    purge_s3_buckets = os.environ.get("PURGE_S3_BUCKETS", "false").lower() == "true"
+    purge_iam_roles = os.environ.get("PURGE_IAM_ROLES", "false").lower() == "true"
+    purge_iam_users = os.environ.get("PURGE_IAM_USERS", "true").lower() == "true"
+    purge_vpcs = os.environ.get("PURGE_VPCS", "false").lower() == "true"
 
     if not dry_run:
         logger.info("Dry-run is disabled. Executing resource purge...")
 
         # 1. ECS Clusters
-        for cluster in resource_plan.get("ecs_clusters", []):
-            cluster_name = cluster["id"]
-            try:
-                logger.info("Deleting ECS Cluster: %s", cluster_name)
-                ecs_client.delete_cluster(cluster=cluster_name)
-                result["deleted"]["ecs_clusters"].append(cluster_name)
-            except Exception as exc:
-                logger.error("Failed to delete ECS Cluster %s: %s", cluster_name, exc)
-                result["failures"]["ecs_clusters"].append({"id": cluster_name, "error": str(exc)})
+        if purge_ecs_clusters:
+            for cluster in resource_plan.get("ecs_clusters", []):
+                cluster_name = cluster["id"]
+                try:
+                    logger.info("Deleting ECS Cluster: %s", cluster_name)
+                    ecs_client.delete_cluster(cluster=cluster_name)
+                    result["deleted"]["ecs_clusters"].append(cluster_name)
+                except Exception as exc:
+                    logger.error("Failed to delete ECS Cluster %s: %s", cluster_name, exc)
+                    result["failures"]["ecs_clusters"].append({"id": cluster_name, "error": str(exc)})
 
         # 2. Auto Scaling Groups
-        for asg in resource_plan.get("auto_scaling_groups", []):
-            asg_name = asg["id"]
-            try:
-                logger.info("Deleting Auto Scaling Group: %s", asg_name)
-                autoscaling_client.delete_auto_scaling_group(AutoScalingGroupName=asg_name, ForceDelete=True)
-                result["deleted"]["auto_scaling_groups"].append(asg_name)
-            except Exception as exc:
-                logger.error("Failed to delete Auto Scaling Group %s: %s", asg_name, exc)
-                result["failures"]["auto_scaling_groups"].append({"id": asg_name, "error": str(exc)})
+        if purge_auto_scaling_groups:
+            for asg in resource_plan.get("auto_scaling_groups", []):
+                asg_name = asg["id"]
+                try:
+                    logger.info("Deleting Auto Scaling Group: %s", asg_name)
+                    autoscaling_client.delete_auto_scaling_group(AutoScalingGroupName=asg_name, ForceDelete=True)
+                    result["deleted"]["auto_scaling_groups"].append(asg_name)
+                except Exception as exc:
+                    logger.error("Failed to delete Auto Scaling Group %s: %s", asg_name, exc)
+                    result["failures"]["auto_scaling_groups"].append({"id": asg_name, "error": str(exc)})
 
         # 3. EC2 Instances
-        for instance in resource_plan.get("ec2_instances", []):
-            instance_id = instance["id"]
-            try:
-                logger.info("Terminating EC2 instance: %s", instance_id)
-                ec2_client.terminate_instances(InstanceIds=[instance_id])
-                result["deleted"]["ec2_instances"].append(instance_id)
-            except Exception as exc:
-                logger.error("Failed to terminate EC2 instance %s: %s", instance_id, exc)
-                result["failures"]["ec2_instances"].append({"id": instance_id, "error": str(exc)})
+        if purge_ec2_instances:
+            for instance in resource_plan.get("ec2_instances", []):
+                instance_id = instance["id"]
+                try:
+                    logger.info("Terminating EC2 instance: %s", instance_id)
+                    ec2_client.terminate_instances(InstanceIds=[instance_id])
+                    result["deleted"]["ec2_instances"].append(instance_id)
+                except Exception as exc:
+                    logger.error("Failed to terminate EC2 instance %s: %s", instance_id, exc)
+                    result["failures"]["ec2_instances"].append({"id": instance_id, "error": str(exc)})
 
         # 4. RDS Instances
-        if purge_data_stores:
+        if purge_rds_instances:
             for db in resource_plan.get("rds_instances", []):
                 db_id = db["id"]
                 try:
@@ -897,7 +948,7 @@ def evaluate_purge_plan(
                     result["failures"]["rds_instances"].append({"id": db_id, "error": str(exc)})
 
         # 5. ElastiCache Clusters
-        if purge_data_stores:
+        if purge_elasticache_clusters:
             for ec in resource_plan.get("elasticache_clusters", []):
                 ec_id = ec["id"]
                 try:
@@ -913,7 +964,7 @@ def evaluate_purge_plan(
                     result["failures"]["elasticache_clusters"].append({"id": ec_id, "error": str(exc)})
 
         # 6. AMP Workspaces
-        if purge_data_stores:
+        if purge_prometheus_workspaces:
             for ws in resource_plan.get("prometheus_workspaces", []):
                 ws_id = ws["id"]
                 try:
@@ -925,40 +976,43 @@ def evaluate_purge_plan(
                     result["failures"]["prometheus_workspaces"].append({"id": ws_id, "error": str(exc)})
 
         # 7. Load Balancers
-        for lb in resource_plan.get("load_balancers", []):
-            lb_arn = lb["arn"]
-            try:
-                logger.info("Deleting Load Balancer: %s", lb_arn)
-                elb_client.delete_load_balancer(LoadBalancerArn=lb_arn)
-                result["deleted"]["load_balancers"].append(lb_arn)
-            except Exception as exc:
-                logger.error("Failed to delete Load Balancer %s: %s", lb_arn, exc)
-                result["failures"]["load_balancers"].append({"arn": lb_arn, "error": str(exc)})
+        if purge_load_balancers:
+            for lb in resource_plan.get("load_balancers", []):
+                lb_arn = lb["arn"]
+                try:
+                    logger.info("Deleting Load Balancer: %s", lb_arn)
+                    elb_client.delete_load_balancer(LoadBalancerArn=lb_arn)
+                    result["deleted"]["load_balancers"].append(lb_arn)
+                except Exception as exc:
+                    logger.error("Failed to delete Load Balancer %s: %s", lb_arn, exc)
+                    result["failures"]["load_balancers"].append({"arn": lb_arn, "error": str(exc)})
 
         # 8. NAT Gateways
-        for gateway in resource_plan.get("nat_gateways", []):
-            gw_id = gateway["id"]
-            try:
-                logger.info("Deleting NAT Gateway: %s", gw_id)
-                ec2_client.delete_nat_gateway(NatGatewayId=gw_id)
-                result["deleted"]["nat_gateways"].append(gw_id)
-            except Exception as exc:
-                logger.error("Failed to delete NAT Gateway %s: %s", gw_id, exc)
-                result["failures"]["nat_gateways"].append({"id": gw_id, "error": str(exc)})
+        if purge_nat_gateways:
+            for gateway in resource_plan.get("nat_gateways", []):
+                gw_id = gateway["id"]
+                try:
+                    logger.info("Deleting NAT Gateway: %s", gw_id)
+                    ec2_client.delete_nat_gateway(NatGatewayId=gw_id)
+                    result["deleted"]["nat_gateways"].append(gw_id)
+                except Exception as exc:
+                    logger.error("Failed to delete NAT Gateway %s: %s", gw_id, exc)
+                    result["failures"]["nat_gateways"].append({"id": gw_id, "error": str(exc)})
 
         # 9. EBS Volumes
-        for volume in resource_plan.get("ebs_volumes", []):
-            vol_id = volume["id"]
-            try:
-                logger.info("Deleting EBS volume: %s", vol_id)
-                ec2_client.delete_volume(VolumeId=vol_id)
-                result["deleted"]["ebs_volumes"].append(vol_id)
-            except Exception as exc:
-                logger.error("Failed to delete EBS volume %s: %s", vol_id, exc)
-                result["failures"]["ebs_volumes"].append({"id": vol_id, "error": str(exc)})
+        if purge_ebs_volumes:
+            for volume in resource_plan.get("ebs_volumes", []):
+                vol_id = volume["id"]
+                try:
+                    logger.info("Deleting EBS volume: %s", vol_id)
+                    ec2_client.delete_volume(VolumeId=vol_id)
+                    result["deleted"]["ebs_volumes"].append(vol_id)
+                except Exception as exc:
+                    logger.error("Failed to delete EBS volume %s: %s", vol_id, exc)
+                    result["failures"]["ebs_volumes"].append({"id": vol_id, "error": str(exc)})
 
         # 10. S3 Buckets
-        if purge_storage_buckets:
+        if purge_s3_buckets:
             for bucket in resource_plan.get("s3_buckets", []):
                 bucket_name = bucket["id"]
                 if bucket_name == os.environ.get("STATE_BUCKET_NAME"):
@@ -975,7 +1029,7 @@ def evaluate_purge_plan(
                     result["failures"]["s3_buckets"].append({"id": bucket_name, "error": str(exc)})
 
         # 11. IAM Users
-        if purge_custom_iam:
+        if purge_iam_users:
             for user in resource_plan.get("iam_users", []):
                 user_name = user["id"]
                 try:
@@ -987,7 +1041,7 @@ def evaluate_purge_plan(
                     result["failures"]["iam_users"].append({"id": user_name, "error": str(exc)})
 
         # 12. IAM Roles
-        if purge_custom_iam:
+        if purge_iam_roles:
             for role in resource_plan.get("iam_roles", []):
                 role_name = role["id"]
                 try:
@@ -999,26 +1053,28 @@ def evaluate_purge_plan(
                     result["failures"]["iam_roles"].append({"id": role_name, "error": str(exc)})
 
         # 13. VPCs
-        for vpc in resource_plan.get("vpcs", []):
-            vpc_id = vpc["id"]
-            try:
-                logger.info("Deleting VPC: %s", vpc_id)
-                delete_vpc_resources(vpc_id, immunity_ids)
-                result["deleted"]["vpcs"].append(vpc_id)
-            except Exception as exc:
-                logger.error("Failed to delete VPC %s: %s", vpc_id, exc)
-                result["failures"]["vpcs"].append({"id": vpc_id, "error": str(exc)})
+        if purge_vpcs:
+            for vpc in resource_plan.get("vpcs", []):
+                vpc_id = vpc["id"]
+                try:
+                    logger.info("Deleting VPC: %s", vpc_id)
+                    delete_vpc_resources(vpc_id, immunity_ids)
+                    result["deleted"]["vpcs"].append(vpc_id)
+                except Exception as exc:
+                    logger.error("Failed to delete VPC %s: %s", vpc_id, exc)
+                    result["failures"]["vpcs"].append({"id": vpc_id, "error": str(exc)})
 
         # 14. Security Groups (remaining non-default)
-        for sg in resource_plan.get("security_groups", []):
-            sg_id = sg["id"]
-            try:
-                logger.info("Deleting Security Group: %s", sg_id)
-                ec2_client.delete_security_group(GroupId=sg_id)
-                result["deleted"]["security_groups"].append(sg_id)
-            except Exception as exc:
-                logger.error("Failed to delete Security Group %s: %s", sg_id, exc)
-                result["failures"]["security_groups"].append({"id": sg_id, "error": str(exc)})
+        if purge_security_groups:
+            for sg in resource_plan.get("security_groups", []):
+                sg_id = sg["id"]
+                try:
+                    logger.info("Deleting Security Group: %s", sg_id)
+                    ec2_client.delete_security_group(GroupId=sg_id)
+                    result["deleted"]["security_groups"].append(sg_id)
+                except Exception as exc:
+                    logger.error("Failed to delete Security Group %s: %s", sg_id, exc)
+                    result["failures"]["security_groups"].append({"id": sg_id, "error": str(exc)})
 
         total_success = sum(len(v) for v in result["deleted"].values())
         total_fail = sum(len(v) for v in result["failures"].values())

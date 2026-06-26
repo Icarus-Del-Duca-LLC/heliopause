@@ -64,21 +64,87 @@ variable "notification_email" {
   default     = null
 }
 
-variable "purge_data_stores" {
-  description = "Toggles purging of RDS, ElastiCache, and AMP resources."
+variable "purge_ec2_instances" {
+  description = "Toggles purging of EC2 instances."
   type        = bool
   default     = true
 }
 
-variable "purge_storage_buckets" {
-  description = "Toggles purging of S3 buckets (contents emptied first)."
+variable "purge_nat_gateways" {
+  description = "Toggles purging of NAT Gateways."
   type        = bool
   default     = true
 }
 
-variable "purge_custom_iam" {
-  description = "Toggles purging of IAM roles and users not whitelisted in state files."
+variable "purge_ebs_volumes" {
+  description = "Toggles purging of detached EBS volumes."
   type        = bool
   default     = true
+}
+
+variable "purge_rds_instances" {
+  description = "Toggles purging of RDS instances."
+  type        = bool
+  default     = true
+}
+
+variable "purge_load_balancers" {
+  description = "Toggles purging of Elastic Load Balancers."
+  type        = bool
+  default     = true
+}
+
+variable "purge_security_groups" {
+  description = "Toggles purging of custom security groups."
+  type        = bool
+  default     = true
+}
+
+variable "purge_auto_scaling_groups" {
+  description = "Toggles purging of Auto Scaling Groups."
+  type        = bool
+  default     = true
+}
+
+variable "purge_ecs_clusters" {
+  description = "Toggles purging of ECS clusters."
+  type        = bool
+  default     = true
+}
+
+variable "purge_elasticache_clusters" {
+  description = "Toggles purging of ElastiCache clusters."
+  type        = bool
+  default     = true
+}
+
+variable "purge_prometheus_workspaces" {
+  description = "Toggles purging of AMP (Prometheus) workspaces."
+  type        = bool
+  default     = true
+}
+
+variable "purge_s3_buckets" {
+  description = "Toggles purging of untracked S3 buckets (off by default)."
+  type        = bool
+  default     = false
+}
+
+variable "purge_iam_roles" {
+  description = "Toggles purging of untracked custom IAM roles (off by default)."
+  type        = bool
+  default     = false
+}
+
+variable "purge_iam_users" {
+  description = "Toggles purging of untracked custom IAM users."
+  type        = bool
+  default     = true
+}
+
+variable "purge_vpcs" {
+  description = "Toggles purging of non-default VPCs (off by default)."
+  type        = bool
+  default     = false
 }
 

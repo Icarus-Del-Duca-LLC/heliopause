@@ -264,6 +264,22 @@ def test_publish_to_sns(mock_sns):
     )
 
 
+@patch.dict(os.environ, {
+    "PURGE_EC2_INSTANCES": "true",
+    "PURGE_NAT_GATEWAYS": "true",
+    "PURGE_EBS_VOLUMES": "true",
+    "PURGE_RDS_INSTANCES": "true",
+    "PURGE_LOAD_BALANCERS": "true",
+    "PURGE_SECURITY_GROUPS": "true",
+    "PURGE_AUTO_SCALING_GROUPS": "true",
+    "PURGE_ECS_CLUSTERS": "true",
+    "PURGE_ELASTICACHE_CLUSTERS": "true",
+    "PURGE_PROMETHEUS_WORKSPACES": "true",
+    "PURGE_S3_BUCKETS": "true",
+    "PURGE_IAM_ROLES": "true",
+    "PURGE_IAM_USERS": "true",
+    "PURGE_VPCS": "true",
+})
 @patch("handler.sts_client")
 @patch("handler.ec2_client")
 @patch("handler.rds_client")

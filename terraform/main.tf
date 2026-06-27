@@ -111,6 +111,16 @@ data "aws_iam_policy_document" "lambda_policy" {
   }
 
   statement {
+    sid = "S3PayloadHandshake"
+    actions = [
+      "s3:PutObject",
+      "s3:DeleteObject"
+    ]
+    resources = ["${aws_s3_bucket.state_bucket.arn}/heliopause/*"]
+  }
+
+
+  statement {
     sid = "CloudWatchLogging"
     actions = [
       "logs:CreateLogGroup",
@@ -256,6 +266,7 @@ resource "aws_lambda_function" "heliopause" {
       PURGE_IAM_USERS             = tostring(var.purge_iam_users)
       PURGE_VPCS                  = tostring(var.purge_vpcs)
       EXTRA_IMMUNE_IAM_ARNS       = jsonencode(var.extra_immune_iam_arns)
+      WARNING_OFFSET_HOURS        = tostring(var.warning_offset_hours)
     }
   }
 }

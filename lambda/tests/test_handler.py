@@ -891,3 +891,69 @@ def test_purge_deletes_pending_list_from_s3(mock_s3, mock_publish, mock_evaluate
         Key="heliopause/pending_resource_purge_list.txt"
     )
 
+
+def test_format_sns_body_mapping():
+    """Test format_sns_body maps raw resource keys (e.g. ec2_instances) to short prefixes (e.g. ec2)"""
+    from handler import format_sns_body
+    
+    resource_plan = {
+        "ec2_instances": [{"id": "i-123"}],
+        "s3_buckets": [{"id": "bucket-1"}]
+    }
+    
+    # warning state
+    warning_body = format_sns_body("warning", resource_plan)
+    assert "ec2:" in warning_body
+    assert "s3:" in warning_body
+    assert "ec2_instances:" not in warning_body
+    assert "s3_buckets:" not in warning_body
+    
+    # dry_run state
+    dry_run_body = format_sns_body("dry_run", resource_plan)
+    assert "ec2:" in dry_run_body
+    assert "s3:" in dry_run_body
+    assert "ec2_instances:" not in dry_run_body
+    assert "s3_buckets:" not in dry_run_body
+    
+    # purge state
+    result = {
+        "deleted": {
+            "ec2_instances": ["i-123"],
+            "s3_buckets": ["bucket-1"]
+        },
+        "failures": {
+            "rds_instances": [{"id": "rds-1", "error": "AccessDenied"}]
+        }
+    }
+    purge_body = format_sns_body("purge", resource_plan, result)
+    assert "ec2:" in purge_body
+    assert "s3:" in purge_body
+    assert "rds:" in purge_body
+    assert "ec2_instances:" not in purge_body
+    assert "s3_buckets:" not in purge_body
+    assert "rds_instances:" not in purge_body
+
+
+@patch("handler.publish_to_sns")
+def test_send_sns_warning_payload_offset_hours(mock_publish):
+    """Test send_sns_warning_payload dynamically interpolates warning_offset_hours and correct singular/plural label"""
+    from handler import send_sns_warning_payload
+    
+    resource_plan = {"ec2_instances": [{"id": "i-123"}]}
+    
+    # Test 4 hours
+    with patch.dict(os.environ, {"WARNING_OFFSET_HOURS": "4"}):
+        send_sns_warning_payload("arn:aws:sns:123", "test-bucket", resource_plan)
+        body = mock_publish.call_args[0][2]
+        assert "EXECUTION IN 4 HOURS" in body
+        
+    mock_publish.reset_mock()
+    
+    # Test 1 hour (singular)
+    with patch.dict(os.environ, {"WARNING_OFFSET_HOURS": "1"}):
+        send_sns_warning_payload("arn:aws:sns:123", "test-bucket", resource_plan)
+        body = mock_publish.call_args[0][2]
+        assert "EXECUTION IN 1 HOUR" in body
+        assert "EXECUTION IN 1 HOURS" not in body
+
+

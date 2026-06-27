@@ -37,75 +37,6 @@ iam_client = LazyClient("iam")
 sts_client = LazyClient("sts")
 
 
-def format_sns_body(state: str, resource_plan: Dict[str, List[Dict[str, Any]]], result: Dict[str, Any] = None) -> str:
-    """Format the SNS message body based on the state.
-    
-    States:
-      - 'warning': Pre-Purge Warning
-      - 'dry_run': Dry-Run Audit
-      - 'purge': Live Purge Complete
-    """
-    body_lines = []
-    
-    if state == "warning":
-        body_lines.append("The following unmanaged resources are scheduled to be purged in the upcoming execution window:")
-        body_lines.append("")
-        for r_type, resources in resource_plan.items():
-            if resources:
-                body_lines.append(f"{r_type}:")
-                for r in resources:
-                    r_id = r.get("id") or r.get("arn") or str(r)
-                    body_lines.append(f"  - {r_id}")
-                    
-    elif state == "dry_run":
-        body_lines.append("Dry-run audit completed. The following resources would have been deleted:")
-        body_lines.append("")
-        for r_type, resources in resource_plan.items():
-            if resources:
-                body_lines.append(f"{r_type}:")
-                for r in resources:
-                    r_id = r.get("id") or r.get("arn") or str(r)
-                    body_lines.append(f"  - {r_id}")
-                    
-    elif state == "purge":
-        body_lines.append("Purge completed.")
-        body_lines.append("")
-        
-        if result:
-            deleted = result.get("deleted", {})
-            failures = result.get("failures", {})
-            
-            body_lines.append("Deleted resources:")
-            has_deleted = False
-            for r_type, ids in deleted.items():
-                if ids:
-                    has_deleted = True
-                    body_lines.append(f"{r_type}:")
-                    for r_id in ids:
-                        body_lines.append(f"  - {r_id}")
-            if not has_deleted:
-                body_lines.append("  (None)")
-                
-            body_lines.append("")
-            body_lines.append("Failed to delete:")
-            has_failures = False
-            for r_type, fails in failures.items():
-                if fails:
-                    has_failures = True
-                    body_lines.append(f"{r_type}:")
-                    for f in fails:
-                        if isinstance(f, dict):
-                            f_id = f.get("id") or f.get("arn") or str(f)
-                            f_err = f.get("error", "Unknown error")
-                            body_lines.append(f"  - {f_id}: {f_err}")
-                        else:
-                            body_lines.append(f"  - {f}")
-            if not has_failures:
-                body_lines.append("  (None)")
-                
-    return "\n".join(body_lines)
-
-
 TYPE_MAPPING = {
     "ec2_instances": "ec2",
     "nat_gateways": "nat",
@@ -124,6 +55,79 @@ TYPE_MAPPING = {
 }
 
 
+def format_sns_body(state: str, resource_plan: Dict[str, List[Dict[str, Any]]], result: Dict[str, Any] = None) -> str:
+    """Format the SNS message body based on the state.
+    
+    States:
+      - 'warning': Pre-Purge Warning
+      - 'dry_run': Dry-Run Audit
+      - 'purge': Live Purge Complete
+    """
+    body_lines = []
+    
+    if state == "warning":
+        body_lines.append("The following unmanaged resources are scheduled to be purged in the upcoming execution window:")
+        body_lines.append("")
+        for r_type, resources in resource_plan.items():
+            if resources:
+                type_prefix = TYPE_MAPPING.get(r_type, r_type)
+                body_lines.append(f"{type_prefix}:")
+                for r in resources:
+                    r_id = r.get("id") or r.get("arn") or str(r)
+                    body_lines.append(f"  - {r_id}")
+                    
+    elif state == "dry_run":
+        body_lines.append("Dry-run audit completed. The following resources would have been deleted:")
+        body_lines.append("")
+        for r_type, resources in resource_plan.items():
+            if resources:
+                type_prefix = TYPE_MAPPING.get(r_type, r_type)
+                body_lines.append(f"{type_prefix}:")
+                for r in resources:
+                    r_id = r.get("id") or r.get("arn") or str(r)
+                    body_lines.append(f"  - {r_id}")
+                    
+    elif state == "purge":
+        body_lines.append("Purge completed.")
+        body_lines.append("")
+        
+        if result:
+            deleted = result.get("deleted", {})
+            failures = result.get("failures", {})
+            
+            body_lines.append("Deleted resources:")
+            has_deleted = False
+            for r_type, ids in deleted.items():
+                if ids:
+                    has_deleted = True
+                    type_prefix = TYPE_MAPPING.get(r_type, r_type)
+                    body_lines.append(f"{type_prefix}:")
+                    for r_id in ids:
+                        body_lines.append(f"  - {r_id}")
+            if not has_deleted:
+                body_lines.append("  (None)")
+                
+            body_lines.append("")
+            body_lines.append("Failed to delete:")
+            has_failures = False
+            for r_type, fails in failures.items():
+                if fails:
+                    has_failures = True
+                    type_prefix = TYPE_MAPPING.get(r_type, r_type)
+                    body_lines.append(f"{type_prefix}:")
+                    for f in fails:
+                        if isinstance(f, dict):
+                            f_id = f.get("id") or f.get("arn") or str(f)
+                            f_err = f.get("error", "Unknown error")
+                            body_lines.append(f"  - {f_id}: {f_err}")
+                        else:
+                            body_lines.append(f"  - {f}")
+            if not has_failures:
+                body_lines.append("  (None)")
+                
+    return "\n".join(body_lines)
+
+
 def send_sns_warning_payload(
     topic_arn: str, 
     state_bucket: str, 
@@ -132,9 +136,12 @@ def send_sns_warning_payload(
     """Compile warning message and publish to SNS, offloading to S3 if it exceeds 240 KB."""
     header = "The following unmanaged resources will be permanently purged at 00:00 UTC:"
     
+    warning_offset_hours = os.environ.get("WARNING_OFFSET_HOURS", "2")
+    hours_suffix = "HOUR" if warning_offset_hours == "1" else "HOURS"
+    
     footer = (
         "──────────────────────────────────────────────────────────────────────\n"
-        "💡 HOW TO PROTECT THESE RESOURCES FROM THE PURGE (EXECUTION IN 2 HOURS)\n"
+        f"💡 HOW TO PROTECT THESE RESOURCES FROM THE PURGE (EXECUTION IN {warning_offset_hours} {hours_suffix})\n"
         "──────────────────────────────────────────────────────────────────────\n"
         "If any of the resources listed above need to survive tonight's purge, \n"
         "you must apply one of the following remediation steps before 00:00 UTC:\n"

@@ -1,18 +1,35 @@
 # Example values for the Heliopause Terraform deployment.
 
-aws_region       = "us-east-1"
-state_bucket_name = ""
-state_prefix      = "heliopause/statefiles/"
-core_state_file   = "heliopause.tfstate"
-lambda_function_name = "heliopause-cleanup"
-lambda_timeout      = 300
-lambda_memory_size  = 512
-schedule_expression = "cron(0 0 * * ? *)"
-dry_run            = true
-notification_email = "alerts@yourdomain.com"
+aws_region                  = "us-east-1"
+state_bucket_name           = ""
+state_prefix                = "heliopause/statefiles/"
+core_state_file             = "heliopause.tfstate"
+lambda_function_name        = "heliopause-cleanup"
+lambda_role_name            = "heliopause-lambda-role"
+lambda_timeout              = 300
+lambda_memory_size          = 512
+schedule_expression         = "cron(0 0 * * ? *)"
+dry_run                     = true
+notification_email          = "alerts@yourdomain.com"
+warning_offset_hours        = 2
+
+# Fine-grained resource family purge switches
+purge_ec2_instances         = true
+purge_nat_gateways          = true
+purge_ebs_volumes           = true
+purge_rds_instances         = true
+purge_load_balancers        = true
+purge_security_groups       = true
+purge_auto_scaling_groups   = true
+purge_ecs_clusters          = true
+purge_elasticache_clusters  = true
+purge_prometheus_workspaces = true
+purge_s3_buckets            = false
+purge_iam_roles             = false
+purge_iam_users             = true
+purge_vpcs                  = false
 
 # ARNs of IAM Users/Roles that should not be deleted (e.g., your admin accounts)
-extra_immune_iam_arns = [
+extra_immune_iam_arns       = [
   "arn:aws:iam::123456789012:user/admin-user"
 ]
-

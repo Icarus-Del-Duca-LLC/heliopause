@@ -15,7 +15,12 @@ output "lambda_function_arn" {
 
 output "eventbridge_rule_name" {
   description = "Name of the EventBridge schedule rule triggering the cleanup Lambda."
-  value       = aws_cloudwatch_event_rule.purge_schedule.name
+  value       = aws_cloudwatch_event_rule.purge_trigger.name
+}
+
+output "warning_eventbridge_rule_name" {
+  description = "Name of the EventBridge schedule rule triggering the warning Lambda."
+  value       = aws_cloudwatch_event_rule.warning_trigger.name
 }
 
 output "sns_topic_arn" {

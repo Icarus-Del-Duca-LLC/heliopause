@@ -106,6 +106,93 @@ def format_sns_body(state: str, resource_plan: Dict[str, List[Dict[str, Any]]], 
     return "\n".join(body_lines)
 
 
+TYPE_MAPPING = {
+    "ec2_instances": "ec2",
+    "nat_gateways": "nat",
+    "ebs_volumes": "ebs",
+    "rds_instances": "rds",
+    "load_balancers": "elb",
+    "security_groups": "sg",
+    "auto_scaling_groups": "asg",
+    "ecs_clusters": "ecs",
+    "elasticache_clusters": "elasticache",
+    "prometheus_workspaces": "prometheus",
+    "s3_buckets": "s3",
+    "iam_roles": "iam_role",
+    "iam_users": "iam_user",
+    "vpcs": "vpc"
+}
+
+
+def send_sns_warning_payload(
+    topic_arn: str, 
+    state_bucket: str, 
+    resource_plan: Dict[str, List[Dict[str, Any]]]
+) -> None:
+    """Compile warning message and publish to SNS, offloading to S3 if it exceeds 240 KB."""
+    header = "The following unmanaged resources will be permanently purged at 00:00 UTC:"
+    
+    footer = (
+        "──────────────────────────────────────────────────────────────────────\n"
+        "💡 HOW TO PROTECT THESE RESOURCES FROM THE PURGE (EXECUTION IN 2 HOURS)\n"
+        "──────────────────────────────────────────────────────────────────────\n"
+        "If any of the resources listed above need to survive tonight's purge, \n"
+        "you must apply one of the following remediation steps before 00:00 UTC:\n"
+        "\n"
+        "Option A: The State Shield (Recommended)\n"
+        "Ensure the resource is managed via Terraform and that its state file \n"
+        "is synced to our central Heliopause S3 immunity bucket prefix.\n"
+        "\n"
+        "Option B: The Real-Time Tag Override\n"
+        "Manually apply the following tag directly to the resource in the AWS Console:\n"
+        "Key:   Heliopause: Shield\n"
+        "Value: true\n"
+        "\n"
+        "Option C: Global Variable Lock (Emergency Mute)\n"
+        "Update your Heliopause environment configuration variable 'DRY_RUN' \n"
+        "to 'true' to completely freeze active destruction across the account."
+    )
+    
+    list_items = []
+    for r_type, resources in resource_plan.items():
+        if resources:
+            type_prefix = TYPE_MAPPING.get(r_type, r_type)
+            for r in resources:
+                r_id = r.get("id") or r.get("arn") or str(r)
+                list_items.append(f"- {type_prefix}: {r_id}")
+                
+    list_content = "\n".join(list_items)
+    full_message = f"{header}\n{list_content}\n\n{footer}"
+    
+    if len(full_message.encode('utf-8')) > 240 * 1024:
+        key = "heliopause/pending_resource_purge_list.txt"
+        logger.info("Warning payload exceeds 240 KB. Writing drift list to S3: s3://%s/%s", state_bucket, key)
+        try:
+            s3_client.put_object(
+                Bucket=state_bucket,
+                Key=key,
+                Body=list_content.encode("utf-8"),
+                ContentType="text/plain"
+            )
+        except Exception as exc:
+            logger.error("Failed to write pending purge list to S3: %s", exc)
+            fallback_msg = f"{header}\n[Error: List exceeded limit and S3 offload failed]\n\n{footer}"
+            publish_to_sns(topic_arn, "[Heliopause] [WARNING] Pending Purge", fallback_msg)
+            return
+
+        replacement_text = (
+            "The list of pending resources was too large to fit in this notification and has been offloaded to S3.\n"
+            f"Bucket: {state_bucket}\n"
+            f"Key: {key}\n"
+            "\n"
+            "To retrieve the full list of resources, run the following AWS CLI command:\n"
+            f"aws s3 cp s3://{state_bucket}/{key} ."
+        )
+        full_message = f"{header}\n{replacement_text}\n\n{footer}"
+        
+    publish_to_sns(topic_arn, "[Heliopause] [WARNING] Pending Purge", full_message)
+
+
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """Entry point for the Heliopause cleanup Lambda."""
     state_bucket = os.environ["STATE_BUCKET_NAME"]
@@ -188,9 +275,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     if sns_topic_arn:
         if action == "warn":
             # State A (Pre-Purge Warning)
-            subject = "[Heliopause] [WARNING] Pending Purge"
-            body = format_sns_body("warning", resource_plan)
-            publish_to_sns(sns_topic_arn, subject, body)
+            send_sns_warning_payload(sns_topic_arn, state_bucket, resource_plan)
         elif dry_run:
             # State B (Dry-Run Audit)
             subject = "[Heliopause] [DRY_RUN_COMPLETED]"
@@ -201,6 +286,17 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             subject = "[Heliopause] [PURGE_COMPLETED]"
             body = format_sns_body("purge", resource_plan, result)
             publish_to_sns(sns_topic_arn, subject, body)
+
+    # Clean up the pending purge list from S3 if it exists during actual purge execution
+    if action == "purge":
+        try:
+            s3_client.delete_object(Bucket=state_bucket, Key="heliopause/pending_resource_purge_list.txt")
+            logger.info("Removed pending resource purge list from S3.")
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] not in ("404", "NoSuchKey"):
+                logger.warning("Could not delete pending resource purge list from S3: %s", exc)
+        except Exception as exc:
+            logger.warning("Could not delete pending resource purge list from S3: %s", exc)
 
     logger.info("Heliopause complete: %s", json.dumps(result, default=str))
     return result

@@ -51,6 +51,47 @@ notification_email = "maintainers@icarusdelduca.com"
 
 When this variable is set, Terraform creates an SNS email subscription for the endpoint. Upon deployment, AWS will send a subscription confirmation email to the configured address. **You must click the confirmation link in that email to start receiving notifications.**
 
+## Manual Invocation & Payloads
+
+You can manually trigger the Heliopause Lambda function from the AWS Console or via the AWS CLI by providing a JSON payload that specifies the desired `action`.
+
+### 1. Warning Trigger Payload
+To run a dry-run sweep of the account and dispatch a warning manifest of pending deletions via SNS, invoke the Lambda with the following payload:
+
+```json
+{
+  "action": "warn"
+}
+```
+
+* **Safety Behavior:** 
+  * If the Lambda's environment variable `DRY_RUN` is set to `true`, the execution will abort/short-circuit immediately before calling any discovery APIs. No SNS warning will be sent.
+  * If `DRY_RUN` is set to `false`, a full account sweep is performed against the immunity list. The warning manifest is published to SNS, but no resource deletions are executed.
+
+### 2. Purge Trigger Payload
+To trigger an active purge (or a dry-run audit of a purge), use the `purge` action (which is also the default action if no payload is supplied):
+
+```json
+{
+  "action": "purge"
+}
+```
+
+* **Execution Behavior:**
+  * If `DRY_RUN` is set to `true`, a standard `[Heliopause] [DRY_RUN_COMPLETED]` audit notification containing the list of resources that would have been deleted is published to SNS. No deletions occur.
+  * If `DRY_RUN` is set to `false`, the active deletion routines are executed. A `[Heliopause] [PURGE_COMPLETED]` ledger of destroyed resource IDs is published to SNS.
+
+### 3. AWS CLI Example
+To invoke the function from your terminal, run:
+
+```bash
+aws lambda invoke \
+  --function-name heliopause-cleanup \
+  --payload '{"action": "warn"}' \
+  --cli-binary-format raw-in-base64-out \
+  response.json
+```
+
 ## License
 
 Heliopause is released under the Apache License 2.0. See `LICENSE` for details.

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/Icarus-Del-Duca-LLC/heliopause/compare/v1.1.0...v1.2.0) (2026-06-27)
+
+
+### Features
+
+* implement pre-purge warning window and EventBridge routing logic ([#7](https://github.com/Icarus-Del-Duca-LLC/heliopause/issues/7)) ([08a2d10](https://github.com/Icarus-Del-Duca-LLC/heliopause/commit/08a2d103c429df117ecfb6a12e1a71af3e3eb17e))
+
 ## [1.1.0](https://github.com/Icarus-Del-Duca-LLC/heliopause/compare/v1.0.0...v1.1.0) (2026-06-26)
 
 

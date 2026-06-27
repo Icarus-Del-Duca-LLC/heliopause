@@ -25,6 +25,12 @@ terraform {
 
 provider "aws" {
   region = var.aws_region
+  default_tags {
+    tags = {
+      ManagedBy     = "Terraform"
+      TerraformRepo = "https://github.com/Icarus-Del-Duca-LLC/heliopause"
+    }
+  }
 }
 
 resource "random_id" "bucket_suffix" {

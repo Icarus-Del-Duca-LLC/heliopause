@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/Icarus-Del-Duca-LLC/heliopause/compare/v1.2.0...v1.2.1) (2026-06-27)
+
+
+### Bug Fixes
+
+* address pre-purge window text, prefix mapping bypass, and lambda IAM policy permissions ([#10](https://github.com/Icarus-Del-Duca-LLC/heliopause/issues/10)) ([9e94e70](https://github.com/Icarus-Del-Duca-LLC/heliopause/commit/9e94e706e9b75c0328fb8dfba2adf88f87a8ead1))
+
 ## [1.2.0](https://github.com/Icarus-Del-Duca-LLC/heliopause/compare/v1.1.0...v1.2.0) (2026-06-27)
 
 

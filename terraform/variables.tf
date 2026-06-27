@@ -154,4 +154,10 @@ variable "extra_immune_iam_arns" {
   default     = []
 }
 
+variable "warning_offset_hours" {
+  description = "Number of hours before the purge to trigger the warning."
+  type        = number
+  default     = 2
+}
+
 

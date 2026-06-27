@@ -16,6 +16,10 @@ terraform {
       source  = "hashicorp/random"
       version = ">= 3.0"
     }
+    external = {
+      source  = "hashicorp/external"
+      version = ">= 2.0"
+    }
   }
 }
 
@@ -256,24 +260,55 @@ resource "aws_lambda_function" "heliopause" {
   }
 }
 
-resource "aws_cloudwatch_event_rule" "purge_schedule" {
-  name                = "heliopause-purge-schedule"
+resource "aws_cloudwatch_event_rule" "purge_trigger" {
+  name                = "heliopause-purge-trigger"
   schedule_expression = var.schedule_expression
-  description         = "Scheduled trigger for the Heliopause cleanup Lambda."
+  description         = "Scheduled trigger for Heliopause cleanup."
 }
 
 resource "aws_cloudwatch_event_target" "purge_lambda" {
-  rule      = aws_cloudwatch_event_rule.purge_schedule.name
-  target_id = "HeliopauseLambda"
+  rule      = aws_cloudwatch_event_rule.purge_trigger.name
+  target_id = "HeliopausePurgeLambda"
   arn       = aws_lambda_function.heliopause.arn
+  input     = jsonencode({ action = "purge" })
 }
 
-resource "aws_lambda_permission" "allow_eventbridge" {
-  statement_id  = "AllowExecutionFromEventBridge"
+resource "aws_lambda_permission" "allow_eventbridge_purge" {
+  statement_id  = "AllowExecutionFromEventBridgePurge"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.heliopause.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.purge_schedule.arn
+  source_arn    = aws_cloudwatch_event_rule.purge_trigger.arn
+}
+
+data "external" "warning_schedule" {
+  program = ["python3", "${path.module}/calculate_warning_schedule.py"]
+
+  query = {
+    schedule_expression  = var.schedule_expression
+    warning_offset_hours = tostring(var.warning_offset_hours)
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "warning_trigger" {
+  name                = "heliopause-warning-trigger"
+  schedule_expression = data.external.warning_schedule.result.schedule_expression
+  description         = "Scheduled warning window trigger for Heliopause."
+}
+
+resource "aws_cloudwatch_event_target" "warning_lambda" {
+  rule      = aws_cloudwatch_event_rule.warning_trigger.name
+  target_id = "HeliopauseWarningLambda"
+  arn       = aws_lambda_function.heliopause.arn
+  input     = jsonencode({ action = "warn" })
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_warning" {
+  statement_id  = "AllowExecutionFromEventBridgeWarning"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.heliopause.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.warning_trigger.arn
 }
 
 

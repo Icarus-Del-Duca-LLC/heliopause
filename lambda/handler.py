@@ -37,6 +37,75 @@ iam_client = LazyClient("iam")
 sts_client = LazyClient("sts")
 
 
+def format_sns_body(state: str, resource_plan: Dict[str, List[Dict[str, Any]]], result: Dict[str, Any] = None) -> str:
+    """Format the SNS message body based on the state.
+    
+    States:
+      - 'warning': Pre-Purge Warning
+      - 'dry_run': Dry-Run Audit
+      - 'purge': Live Purge Complete
+    """
+    body_lines = []
+    
+    if state == "warning":
+        body_lines.append("The following unmanaged resources are scheduled to be purged in the upcoming execution window:")
+        body_lines.append("")
+        for r_type, resources in resource_plan.items():
+            if resources:
+                body_lines.append(f"{r_type}:")
+                for r in resources:
+                    r_id = r.get("id") or r.get("arn") or str(r)
+                    body_lines.append(f"  - {r_id}")
+                    
+    elif state == "dry_run":
+        body_lines.append("Dry-run audit completed. The following resources would have been deleted:")
+        body_lines.append("")
+        for r_type, resources in resource_plan.items():
+            if resources:
+                body_lines.append(f"{r_type}:")
+                for r in resources:
+                    r_id = r.get("id") or r.get("arn") or str(r)
+                    body_lines.append(f"  - {r_id}")
+                    
+    elif state == "purge":
+        body_lines.append("Purge completed.")
+        body_lines.append("")
+        
+        if result:
+            deleted = result.get("deleted", {})
+            failures = result.get("failures", {})
+            
+            body_lines.append("Deleted resources:")
+            has_deleted = False
+            for r_type, ids in deleted.items():
+                if ids:
+                    has_deleted = True
+                    body_lines.append(f"{r_type}:")
+                    for r_id in ids:
+                        body_lines.append(f"  - {r_id}")
+            if not has_deleted:
+                body_lines.append("  (None)")
+                
+            body_lines.append("")
+            body_lines.append("Failed to delete:")
+            has_failures = False
+            for r_type, fails in failures.items():
+                if fails:
+                    has_failures = True
+                    body_lines.append(f"{r_type}:")
+                    for f in fails:
+                        if isinstance(f, dict):
+                            f_id = f.get("id") or f.get("arn") or str(f)
+                            f_err = f.get("error", "Unknown error")
+                            body_lines.append(f"  - {f_id}: {f_err}")
+                        else:
+                            body_lines.append(f"  - {f}")
+            if not has_failures:
+                body_lines.append("  (None)")
+                
+    return "\n".join(body_lines)
+
+
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """Entry point for the Heliopause cleanup Lambda."""
     state_bucket = os.environ["STATE_BUCKET_NAME"]
@@ -61,7 +130,19 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     purge_iam_users = os.environ.get("PURGE_IAM_USERS", "true").lower() == "true"
     purge_vpcs = os.environ.get("PURGE_VPCS", "false").lower() == "true"
 
-    logger.info("Heliopause starting: dry_run=%s, bucket=%s, prefix=%s, core_file=%s", dry_run, state_bucket, state_prefix, core_state_file)
+    action = event.get("action", "purge")
+    logger.info("Heliopause starting: action=%s, dry_run=%s, bucket=%s, prefix=%s, core_file=%s", 
+                action, dry_run, state_bucket, state_prefix, core_state_file)
+
+    # 1. Global Safeguard: If action == "warn" and DRY_RUN is true, abort execution immediately.
+    if action == "warn" and dry_run:
+        msg = "Pre-purge warning suppressed: DRY_RUN is enabled."
+        logger.info(msg)
+        return {
+            "dry_run": True,
+            "action": "warn",
+            "message": msg
+        }
 
     # Check for core state file presence
     core_state_key = f"{state_prefix}{core_state_file}"
@@ -98,12 +179,28 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         purge_iam_users=purge_iam_users,
         purge_vpcs=purge_vpcs
     )
-    result = evaluate_purge_plan(resource_plan, dry_run, context=context, immunity_ids=immunity_ids)
 
-    # Publish summary to SNS as JSON payload
+    # For 'warn' action, we must strictly NOT execute any deletion blocks, so evaluate with dry_run=True.
+    eval_dry_run = True if action == "warn" else dry_run
+    result = evaluate_purge_plan(resource_plan, eval_dry_run, context=context, immunity_ids=immunity_ids)
+
+    # Publish decoupled notifications to SNS based on the routing matrix
     if sns_topic_arn:
-        subject = "Heliopause Dry-Run Summary" if dry_run else "Heliopause Purge Summary"
-        publish_to_sns(sns_topic_arn, subject, json.dumps(result, default=str, indent=2))
+        if action == "warn":
+            # State A (Pre-Purge Warning)
+            subject = "[Heliopause] [WARNING] Pending Purge"
+            body = format_sns_body("warning", resource_plan)
+            publish_to_sns(sns_topic_arn, subject, body)
+        elif dry_run:
+            # State B (Dry-Run Audit)
+            subject = "[Heliopause] [DRY_RUN_COMPLETED]"
+            body = format_sns_body("dry_run", resource_plan)
+            publish_to_sns(sns_topic_arn, subject, body)
+        else:
+            # State C (Live Purge Complete)
+            subject = "[Heliopause] [PURGE_COMPLETED]"
+            body = format_sns_body("purge", resource_plan, result)
+            publish_to_sns(sns_topic_arn, subject, body)
 
     logger.info("Heliopause complete: %s", json.dumps(result, default=str))
     return result

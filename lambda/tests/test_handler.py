@@ -658,3 +658,142 @@ def test_scan_iam_users_extra_immune(mock_iam):
         assert len(result) == 1
         assert result[0]["id"] == "user-123"
 
+
+@patch.dict(os.environ, {"STATE_BUCKET_NAME": "test-bucket", "STATE_PREFIX": "test-prefix/", "CORE_STATE_FILE": "heliopause.tfstate", "DRY_RUN": "true", "SNS_TOPIC_ARN": "arn:aws:sns:us-east-1:123456789012:test-topic"})
+@patch("handler.state_file_exists")
+@patch("handler.list_state_files")
+@patch("handler.build_immunity_list")
+@patch("handler.scan_for_purge_candidates")
+@patch("handler.evaluate_purge_plan")
+@patch("handler.publish_to_sns")
+def test_lambda_handler_warn_dry_run_true(mock_publish, mock_evaluate, mock_scan, mock_build, mock_list, mock_exists):
+    """Event: {"action": "warn"} + DRY_RUN=true -> Short-circuit immediately, no SNS message, no discovery."""
+    mock_exists.return_value = True
+    event = {"action": "warn"}
+    context = MagicMock()
+    
+    result = lambda_handler(event, context)
+    
+    assert result["dry_run"] is True
+    assert result["action"] == "warn"
+    assert "suppressed" in result["message"]
+    
+    # Discovery/API mocks must NOT be called
+    mock_exists.assert_not_called()
+    mock_list.assert_not_called()
+    mock_build.assert_not_called()
+    mock_scan.assert_not_called()
+    mock_evaluate.assert_not_called()
+    mock_publish.assert_not_called()
+
+
+@patch.dict(os.environ, {"STATE_BUCKET_NAME": "test-bucket", "STATE_PREFIX": "test-prefix/", "CORE_STATE_FILE": "heliopause.tfstate", "DRY_RUN": "false", "SNS_TOPIC_ARN": "arn:aws:sns:us-east-1:123456789012:test-topic"})
+@patch("handler.state_file_exists")
+@patch("handler.list_state_files")
+@patch("handler.build_immunity_list")
+@patch("handler.scan_for_purge_candidates")
+@patch("handler.evaluate_purge_plan")
+@patch("handler.publish_to_sns")
+def test_lambda_handler_warn_dry_run_false(mock_publish, mock_evaluate, mock_scan, mock_build, mock_list, mock_exists):
+    """Event: {"action": "warn"} + DRY_RUN=false -> Run sweep, publish warning to SNS, do NOT delete."""
+    mock_exists.return_value = True
+    mock_list.return_value = ["test-prefix/heliopause.tfstate"]
+    mock_build.return_value = {"id1"}
+    mock_scan.return_value = {"ec2_instances": [{"id": "i-warn123"}]}
+    mock_evaluate.return_value = {
+        "dry_run": True,
+        "summary": {"ec2_instances": 1},
+        "resources": {"ec2_instances": [{"id": "i-warn123"}]},
+        "deleted": {"ec2_instances": []},
+        "failures": {"ec2_instances": []}
+    }
+    
+    event = {"action": "warn"}
+    context = MagicMock()
+    
+    result = lambda_handler(event, context)
+    
+    # Verify deletions were NOT executed (evaluate_purge_plan called with dry_run=True)
+    mock_evaluate.assert_called_once_with(mock_scan.return_value, True, context=context, immunity_ids={"id1"})
+    
+    # Verify SNS warning was published
+    mock_publish.assert_called_once()
+    subject = mock_publish.call_args[0][1]
+    body = mock_publish.call_args[0][2]
+    assert subject == "[Heliopause] [WARNING] Pending Purge"
+    assert "i-warn123" in body
+
+
+@patch.dict(os.environ, {"STATE_BUCKET_NAME": "test-bucket", "STATE_PREFIX": "test-prefix/", "CORE_STATE_FILE": "heliopause.tfstate", "DRY_RUN": "true", "SNS_TOPIC_ARN": "arn:aws:sns:us-east-1:123456789012:test-topic"})
+@patch("handler.state_file_exists")
+@patch("handler.list_state_files")
+@patch("handler.build_immunity_list")
+@patch("handler.scan_for_purge_candidates")
+@patch("handler.evaluate_purge_plan")
+@patch("handler.publish_to_sns")
+def test_lambda_handler_purge_dry_run_true(mock_publish, mock_evaluate, mock_scan, mock_build, mock_list, mock_exists):
+    """Event: {"action": "purge"} + DRY_RUN=true -> Run sweep, publish DRY_RUN_COMPLETED, do NOT delete."""
+    mock_exists.return_value = True
+    mock_list.return_value = ["test-prefix/heliopause.tfstate"]
+    mock_build.return_value = {"id1"}
+    mock_scan.return_value = {"ec2_instances": [{"id": "i-dry123"}]}
+    mock_evaluate.return_value = {
+        "dry_run": True,
+        "summary": {"ec2_instances": 1},
+        "resources": {"ec2_instances": [{"id": "i-dry123"}]},
+        "deleted": {"ec2_instances": []},
+        "failures": {"ec2_instances": []}
+    }
+    
+    event = {"action": "purge"}
+    context = MagicMock()
+    
+    result = lambda_handler(event, context)
+    
+    # Verify dry_run passed to evaluate
+    mock_evaluate.assert_called_once_with(mock_scan.return_value, True, context=context, immunity_ids={"id1"})
+    
+    # Verify SNS dry-run completed audit was published
+    mock_publish.assert_called_once()
+    subject = mock_publish.call_args[0][1]
+    body = mock_publish.call_args[0][2]
+    assert subject == "[Heliopause] [DRY_RUN_COMPLETED]"
+    assert "i-dry123" in body
+
+
+@patch.dict(os.environ, {"STATE_BUCKET_NAME": "test-bucket", "STATE_PREFIX": "test-prefix/", "CORE_STATE_FILE": "heliopause.tfstate", "DRY_RUN": "false", "SNS_TOPIC_ARN": "arn:aws:sns:us-east-1:123456789012:test-topic"})
+@patch("handler.state_file_exists")
+@patch("handler.list_state_files")
+@patch("handler.build_immunity_list")
+@patch("handler.scan_for_purge_candidates")
+@patch("handler.evaluate_purge_plan")
+@patch("handler.publish_to_sns")
+def test_lambda_handler_purge_dry_run_false(mock_publish, mock_evaluate, mock_scan, mock_build, mock_list, mock_exists):
+    """Event: {"action": "purge"} + DRY_RUN=false -> Run sweep, execute deletions, publish PURGE_COMPLETED."""
+    mock_exists.return_value = True
+    mock_list.return_value = ["test-prefix/heliopause.tfstate"]
+    mock_build.return_value = {"id1"}
+    mock_scan.return_value = {"ec2_instances": [{"id": "i-purge123"}]}
+    mock_evaluate.return_value = {
+        "dry_run": False,
+        "summary": {"ec2_instances": 1},
+        "resources": {"ec2_instances": [{"id": "i-purge123"}]},
+        "deleted": {"ec2_instances": ["i-purge123"]},
+        "failures": {"ec2_instances": []}
+    }
+    
+    event = {"action": "purge"}
+    context = MagicMock()
+    
+    result = lambda_handler(event, context)
+    
+    # Verify dry_run=False passed to evaluate
+    mock_evaluate.assert_called_once_with(mock_scan.return_value, False, context=context, immunity_ids={"id1"})
+    
+    # Verify SNS purge completed ledger was published
+    mock_publish.assert_called_once()
+    subject = mock_publish.call_args[0][1]
+    body = mock_publish.call_args[0][2]
+    assert subject == "[Heliopause] [PURGE_COMPLETED]"
+    assert "i-purge123" in body
+
